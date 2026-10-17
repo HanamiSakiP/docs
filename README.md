@@ -12,6 +12,9 @@
 
 * start
 ```bash
+git clone https://github.com/HanamiSakiP/AI.git && cd AI
+chmod +x *.sh && ./install
+exec bash
 docsify serve .
 ```
 
