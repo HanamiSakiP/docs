@@ -230,9 +230,10 @@ restore_g() {
     local env_config
     env_config=$(cat <<'EOF'
 # g (Go Version Manager) configuration
-export GOROOT="$HOME/.g/go"
-export PATH="$HOME/.g/bin:$GOROOT/bin:$PATH"
-export GOPATH="$HOME/go"
+if [[ -n $(alias g 2>/dev/null) ]]; then
+    unalias g
+fi
+[ -s "${HOME}/.g/env" ] && \. "${HOME}/.g/env"  # g shell setup
 EOF
 )
 

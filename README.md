@@ -19,6 +19,51 @@ docsify serve .
 ```
 
 <details>
+<summary>test</summary>
+
+docker
+```bash
+docker pull debian
+# 精简版debian
+docker pull debian:trixie-slim
+podman run -it --name my-debian debian:latest /bin/bash
+podman start -ai my-debian
+# 强制删除容器
+# podman rm -f debian-test
+# 按标签删除镜像
+# podman rmi debian:latest
+# 或者按 ID 删除镜像
+# podman rmi 99339bdd341a
+# 复制文件出当前目录
+podman cp my-debian:/AI ./
+```
+apt
+```bash
+apt update
+apt install curl git nano
+apt install -y build-essential \
+libssl-dev \
+zlib1g-dev \
+libbz2-dev \
+libreadline-dev \
+libsqlite3-dev \
+libffi-dev \
+liblzma-dev \
+pkg-config
+```
+镜像源
+```bash
+# go
+export GOPROXY=https://goproxy.cn,direct
+# npm
+npm install docsify-cli -g --registry=https://registry.npmmirror.com
+# python
+pip install httpie -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+```
+
+</details>
+
+<details>
 <summary>tools</summary>
 
 node
