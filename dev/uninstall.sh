@@ -1,33 +1,63 @@
 #!/usr/bin/env bash
 set -euo pipefail
-IFS=$'\n\t'
 
-# ========== 颜色定义 ==========
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-NC='\033[0m'
+# ---------------------------------------------------------------------------
+# 日志
+# ---------------------------------------------------------------------------
+log()   { printf '\033[36m[INFO]\033[0m %s\n' "$*"; }
+warn()  { printf '\033[33m[WARN]\033[0m %s\n' "$*" >&2; }
+error() { printf '\033[31m[ERROR]\033[0m %s\n' "$*" >&2; }
+die()   { error "$@"; exit 1; }
 
-# ========== 日志函数 ==========
-log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
+# ---------------------------------------------------------------------------
+# 常量 / 路径
+# ---------------------------------------------------------------------------
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="${UNINSTALL_BACKUP_DIR:-$HOME/.toolchain-uninstall-backup.${STAMP}}"
 
-# ========== 常量 ==========
-BACKUP_DIR="$HOME/.toolchain-uninstall-backup.$(date +%Y%m%d-%H%M%S)"
-
-# 与 install.sh 默认值保持一致
 GOPATH="${GOPATH:-$HOME/go}"
+PYENV_ROOT="${PYENV_ROOT:-$HOME/.pyenv}"
+NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 
-# 覆盖 install.sh 与官方安装脚本可能写入的所有相关行：
-#  - pyenv: PYENV_ROOT / pyenv init / pyenv virtualenv-init / pyenv/bin
-#  - g    : .g/ 下的任意路径（.g/env、.g/bin、.g/go、.g/versions…）与 # g shell setup 注释
-#  - nvm  : NVM_DIR / nvm.sh / nvm/bash_completion / 自定义中文注释
-CONFIG_PATTERN='PYENV_ROOT|pyenv init|pyenv virtualenv-init|pyenv/bin|g shell setup|\.g/|NVM_DIR|nvm\.sh|nvm/bash_completion|^# nvm配置|^# nvm$|^# pyenv'
+# restore.sh 写入的多行 g 配置块块头
+G_BLOCK_START='# g (Go Version Manager) configuration'
 
-# ========== 帮助 ==========
+# 单行需要清理的模式（含块被拆散时的兜底）
+CONFIG_PATTERNS=(
+    'PYENV_ROOT'
+    'pyenv init'
+    'pyenv virtualenv-init'
+    'pyenv/bin'
+    'g shell setup'
+    '\.g/'
+    'NVM_DIR'
+    'nvm\.sh'
+    'nvm/bash_completion'
+    '^# nvm配置'
+    '^# nvm$'
+    '^# pyenv'
+    # 兜底：块头被手工删掉、只剩块内行时的残留
+    '^[[:space:]]*unalias[[:space:]]+g[[:space:]]*$'
+)
+CONFIG_PATTERN="$(IFS='|'; echo "${CONFIG_PATTERNS[*]}")"
+
+# ---------------------------------------------------------------------------
+# 临时路径清理
+# ---------------------------------------------------------------------------
+CLEANUP_PATHS=()
+_cleanup_trap() {
+    local p
+    for p in "${CLEANUP_PATHS[@]+"${CLEANUP_PATHS[@]}"}"; do
+        [[ -e "$p" ]] && rm -rf -- "$p"
+    done
+}
+trap _cleanup_trap EXIT
+
+# ---------------------------------------------------------------------------
+# 用法
+# ---------------------------------------------------------------------------
 usage() {
-  cat <<EOF
+    cat <<EOF
 用法: ./uninstall.sh [-y|--yes] [-k|--keep-gopath] [-h|--help]
 
   -y, --yes          跳过确认，直接卸载
@@ -35,220 +65,287 @@ usage() {
   -h, --help         显示帮助
 
 说明:
-  1. 备份并清理 ~/.bashrc 与 ~/.profile 中由 install.sh / 官方安装脚本写入的配置
-  2. 删除 ~/.pyenv、~/.g、~/.nvm（含已安装的语言版本）
+  1. 备份并清理 ~/.bashrc 与 ~/.profile 中由 install.sh / restore.sh 写入的配置
+     （含 restore.sh 写入的多行 g 配置块）
+  2. 删除 ${PYENV_ROOT}、$HOME/.g、${NVM_DIR}（含已安装的语言版本）
   3. 默认删除 GOPATH 目录（${GOPATH}）；使用 -k 可保留
   4. 结束后尝试 source ~/.bashrc 刷新环境
+
+环境变量:
+  PYENV_ROOT            pyenv 安装目录（默认: \$HOME/.pyenv）
+  NVM_DIR               nvm 安装目录（默认: \$HOME/.nvm）
+  GOPATH                Go 工作目录（默认: \$HOME/go）
+  UNINSTALL_BACKUP_DIR  卸载前配置备份目录（默认: \$HOME/.toolchain-uninstall-backup.<stamp>）
 EOF
 }
 
-# ========== 参数解析 ==========
+# ---------------------------------------------------------------------------
+# 参数解析
+# ---------------------------------------------------------------------------
 ASSUME_YES=0
 KEEP_GOPATH=0
 for arg in "$@"; do
-  case "$arg" in
-    -y|--yes) ASSUME_YES=1 ;;
-    -k|--keep-gopath) KEEP_GOPATH=1 ;;
-    -h|--help) usage; exit 0 ;;
-    *) log_error "未知参数: $arg（使用 -h 查看帮助）" ;;
-  esac
+    case "$arg" in
+        -y|--yes)         ASSUME_YES=1 ;;
+        -k|--keep-gopath) KEEP_GOPATH=1 ;;
+        -h|--help)        usage; exit 0 ;;
+        *)                die "未知参数: $arg（使用 -h 查看帮助）" ;;
+    esac
 done
 
-# ========== 确认 ==========
+# ---------------------------------------------------------------------------
+# 确认
+# ---------------------------------------------------------------------------
 confirm_uninstall() {
-  [[ $ASSUME_YES -eq 1 ]] && return 0
+    if [[ $ASSUME_YES -eq 1 ]]; then
+        return 0
+    fi
 
-  echo -e "${YELLOW}即将卸载以下工具链:${NC}"
-  echo "  - pyenv  : $HOME/.pyenv"
-  echo "  - g      : $HOME/.g（含 GOROOT/Go SDK 与已安装的 Go 版本）"
-  echo "  - nvm    : $HOME/.nvm（含已安装的 Node 版本）"
-  if [[ $KEEP_GOPATH -eq 1 ]]; then
-    echo -e "  - GOPATH : ${YELLOW}保留${NC}（$GOPATH）"
-  else
-    echo -e "  - GOPATH : ${GOPATH}（${YELLOW}将被删除，含其中的项目代码与已编译二进制${NC}）"
-  fi
-  echo
-  echo -e "${YELLOW}并会备份后清理以下文件中的相关配置:${NC}"
-  echo "  - $HOME/.bashrc"
-  echo "  - $HOME/.profile"
-  echo
+    if [[ ! -t 0 || ! -t 1 ]]; then
+        die "非交互环境，请使用 -y/--yes 显式确认卸载"
+    fi
 
-  local ans=""
-  read -r -p "确认继续? [y/N] " ans || ans=""
-  case "$ans" in
-    y|Y|yes|YES) ;;
-    *) log_warn "已取消卸载"; exit 0 ;;
-  esac
+    echo "即将卸载以下工具链:"
+    echo "  - pyenv  : $PYENV_ROOT"
+    echo "  - g      : $HOME/.g（含 GOROOT/Go SDK 与已安装的 Go 版本）"
+    echo "  - nvm    : $NVM_DIR（含已安装的 Node 版本）"
+    if [[ $KEEP_GOPATH -eq 1 ]]; then
+        echo "  - GOPATH : 保留（$GOPATH）"
+    else
+        echo "  - GOPATH : $GOPATH（将被删除，含其中的项目代码与已编译二进制）"
+    fi
+    echo
+    echo "并会备份后清理以下文件中的相关配置:"
+    echo "  - $HOME/.bashrc"
+    echo "  - $HOME/.profile"
+    echo
+
+    local ans=""
+    read -r -p "确认继续? [y/N] " ans || ans=""
+    case "$ans" in
+        y|Y|yes|YES) ;;
+        *) warn "已取消卸载"; exit 0 ;;
+    esac
 }
 
-# ========== 清理单个配置文件 ==========
+# ---------------------------------------------------------------------------
+# 检测文件中是否含需要清理的配置（含多行 g 块头）
+# ---------------------------------------------------------------------------
+_file_has_config() {
+    local file="$1"
+    grep -qF -- "$G_BLOCK_START" "$file" 2>/dev/null && return 0
+    grep -qE -- "$CONFIG_PATTERN" "$file" 2>/dev/null && return 0
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# 清理单个配置文件
+# ---------------------------------------------------------------------------
 cleanup_config_file() {
-  local file="$1"
+    local file="$1"
 
-  if [[ ! -f "$file" ]]; then
-    log_warn "未找到 $file，跳过"
-    return 0
-  fi
+    if [[ ! -f "$file" ]]; then
+        warn "未找到 $file，跳过"
+        return 0
+    fi
 
-  if ! grep -qE "$CONFIG_PATTERN" "$file"; then
-    log_info "$file 无需清理"
-    return 0
-  fi
+    if ! _file_has_config "$file"; then
+        log "$file 无需清理"
+        return 0
+    fi
 
-  mkdir -p "$BACKUP_DIR"
-  local backup="$BACKUP_DIR/$(basename "$file").bak"
-  cp -p "$file" "$backup"
-  log_info "已备份 $file -> $backup"
+    mkdir -p "$BACKUP_DIR"
+    local backup="$BACKUP_DIR/$(basename "$file").bak"
+    cp -p "$file" "$backup"
+    log "已备份 $file -> $backup"
 
-  local before after
-  before=$(wc -l < "$file")
-  grep -vE "$CONFIG_PATTERN" "$file" > "$file.tmp" || true
-  cat "$file.tmp" > "$file"
-  rm -f "$file.tmp"
-  after=$(wc -l < "$file")
+    local tmp1 tmp2 before after
+    tmp1="$(mktemp)"; CLEANUP_PATHS+=("$tmp1")
+    tmp2="$(mktemp)"; CLEANUP_PATHS+=("$tmp2")
+    before=$(wc -l < "$file")
 
-  log_info "已清理 $file（$before -> $after 行）"
+    # 1) 删除 restore.sh 写入的多行 g 配置块
+    #    块头: # g (Go Version Manager) configuration
+    #    块尾: 含 "g shell setup" 或 ".g/env" 的行（正常情况）
+    #    块不完整（缺块尾）时，遇到明显不属于块的行即结束块状态并保留该行，
+    #    避免误吞后续内容
+    awk '
+        /^# g \(Go Version Manager\) configuration/ { in_block = 1; next }
+        in_block {
+            if ($0 ~ /g shell setup/ || $0 ~ /\.g\/env/) {
+                in_block = 0; next
+            }
+            if ($0 ~ /^[[:space:]]*$/)                                  next
+            if ($0 ~ /^[[:space:]]*#/)                                  next
+            if ($0 ~ /^[[:space:]]*if[[:space:]]/)                      next
+            if ($0 ~ /^[[:space:]]*fi[[:space:]]*$/)                    next
+            if ($0 ~ /^[[:space:]]*unalias[[:space:]]+g[[:space:]]*$/)  next
+            if ($0 ~ /^[[:space:]]*\[/)                                 next
+            if ($0 ~ /GOROOT=.*\.g\/go/)                                next
+            in_block = 0
+            print
+            next
+        }
+        { print }
+    ' "$file" > "$tmp1"
+
+    # 2) 单行模式兜底（pyenv / nvm / 被拆散的 g 块残留等）
+    grep -vE -- "$CONFIG_PATTERN" "$tmp1" > "$tmp2" || true
+
+    cat "$tmp2" > "$file"
+    after=$(wc -l < "$file")
+
+    log "已清理 $file（$before -> $after 行）"
 }
 
-# ========== 删除工具目录 ==========
+# ---------------------------------------------------------------------------
+# 删除工具目录
+# ---------------------------------------------------------------------------
 remove_pyenv() {
-  if [[ -d "$HOME/.pyenv" ]]; then
-    log_info "删除 pyenv: $HOME/.pyenv"
-    rm -rf "$HOME/.pyenv" || log_error "删除 $HOME/.pyenv 失败"
-  else
-    log_warn "未发现 $HOME/.pyenv，跳过"
-  fi
+    if [[ -d "$PYENV_ROOT" ]]; then
+        log "删除 pyenv: $PYENV_ROOT"
+        rm -rf "$PYENV_ROOT" || die "删除 $PYENV_ROOT 失败"
+    else
+        warn "未发现 $PYENV_ROOT，跳过"
+    fi
 }
 
 remove_g() {
-  if [[ -d "$HOME/.g" ]]; then
-    log_info "删除 g 及 Go SDK/版本: $HOME/.g"
-    rm -rf "$HOME/.g" || log_error "删除 $HOME/.g 失败"
-  else
-    log_warn "未发现 $HOME/.g，跳过"
-  fi
+    if [[ -d "$HOME/.g" ]]; then
+        log "删除 g 及 Go SDK/版本: $HOME/.g"
+        rm -rf "$HOME/.g" || die "删除 $HOME/.g 失败"
+    else
+        warn "未发现 $HOME/.g，跳过"
+    fi
 }
 
 remove_nvm() {
-  if [[ -d "$HOME/.nvm" ]]; then
-    log_info "删除 nvm 及 Node 版本: $HOME/.nvm"
-    rm -rf "$HOME/.nvm" || log_error "删除 $HOME/.nvm 失败"
-  else
-    log_warn "未发现 $HOME/.nvm，跳过"
-  fi
+    if [[ -d "$NVM_DIR" ]]; then
+        log "删除 nvm 及 Node 版本: $NVM_DIR"
+        rm -rf "$NVM_DIR" || die "删除 $NVM_DIR 失败"
+    else
+        warn "未发现 $NVM_DIR，跳过"
+    fi
 }
 
 remove_gopath() {
-  if [[ $KEEP_GOPATH -eq 1 ]]; then
-    log_info "按参数要求保留 GOPATH: $GOPATH"
-    return 0
-  fi
+    if [[ $KEEP_GOPATH -eq 1 ]]; then
+        log "按参数要求保留 GOPATH: $GOPATH"
+        return 0
+    fi
 
-  # 安全校验：拒绝删除根目录、家目录、空路径
-  if [[ -z "$GOPATH" || "$GOPATH" == "/" || "$GOPATH" == "$HOME" ]]; then
-    log_error "GOPATH 路径异常（'$GOPATH'），拒绝删除，请检查环境变量 GOPATH"
-  fi
+    if [[ -z "$GOPATH" || "$GOPATH" == "/" || "$GOPATH" == "$HOME" ]]; then
+        die "GOPATH 路径异常（'$GOPATH'），拒绝删除，请检查环境变量 GOPATH"
+    fi
 
-  # 层级过浅时警告（如 /usr、/opt），提示用户确认
-  local depth
-  depth=$(echo "$GOPATH" | awk -F/ '{print NF-1}')
-  if [[ "$depth" -lt 2 ]]; then
-    log_warn "GOPATH 路径 '$GOPATH' 层级较浅，请确认这是期望删除的目录"
-  fi
+    local depth
+    depth=$(echo "$GOPATH" | awk -F/ '{print NF-1}')
+    if [[ "$depth" -lt 2 ]]; then
+        warn "GOPATH 路径 '$GOPATH' 层级较浅，请确认这是期望删除的目录"
+    fi
 
-  if [[ -d "$GOPATH" ]]; then
-    log_info "删除 GOPATH: $GOPATH"
-    rm -rf "$GOPATH" || log_error "删除 $GOPATH 失败"
-  else
-    log_warn "未发现 $GOPATH，跳过"
-  fi
+    if [[ -d "$GOPATH" ]]; then
+        log "删除 GOPATH: $GOPATH"
+        rm -rf "$GOPATH" || die "删除 $GOPATH 失败"
+    else
+        warn "未发现 $GOPATH，跳过"
+    fi
 }
 
-# ========== 残留检查 ==========
+# ---------------------------------------------------------------------------
+# 残留检查
+# ---------------------------------------------------------------------------
 post_check() {
-  log_info "检查残留..."
+    log "检查残留..."
 
-  local found=0
-  for d in "$HOME/.pyenv" "$HOME/.g" "$HOME/.nvm"; do
-    if [[ -e "$d" ]]; then
-      log_warn "残留目录: $d"
-      found=1
+    local found=0 d f
+    for d in "$PYENV_ROOT" "$HOME/.g" "$NVM_DIR"; do
+        if [[ -e "$d" ]]; then
+            warn "残留目录: $d"
+            found=1
+        fi
+    done
+
+    if [[ $KEEP_GOPATH -eq 0 && -e "$GOPATH" ]]; then
+        warn "残留目录: $GOPATH"
+        found=1
     fi
-  done
 
-  if [[ $KEEP_GOPATH -eq 0 && -e "$GOPATH" ]]; then
-    log_warn "残留目录: $GOPATH"
-    found=1
-  fi
+    for f in "$HOME/.bashrc" "$HOME/.profile"; do
+        if [[ -f "$f" ]] && _file_has_config "$f"; then
+            warn "残留配置: $f（可手动检查）"
+            found=1
+        fi
+    done
 
-  for f in "$HOME/.bashrc" "$HOME/.profile"; do
-    if [[ -f "$f" ]] && grep -qE "$CONFIG_PATTERN" "$f"; then
-      log_warn "残留配置: $f（可手动检查）"
-      found=1
+    for f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.zshrc" "$HOME/.zprofile"; do
+        if [[ -f "$f" ]] && _file_has_config "$f"; then
+            warn "$f 中仍有相关配置，脚本未修改该文件，请按需手动清理"
+            found=1
+        fi
+    done
+
+    if [[ $found -eq 0 ]]; then
+        log "未发现残留"
     fi
-  done
-
-  for f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.zshrc" "$HOME/.zprofile"; do
-    if [[ -f "$f" ]] && grep -qE "$CONFIG_PATTERN" "$f"; then
-      log_warn "$f 中仍有相关配置，脚本未修改该文件，请按需手动清理"
-      found=1
-    fi
-  done
-
-  [[ $found -eq 0 ]] && log_info "未发现残留"
 }
 
-# ========== 刷新环境变量 ==========
-refresh_env() {
-  local rc="$HOME/.bashrc"
+# ---------------------------------------------------------------------------
+# 刷新 shell 环境
+# ---------------------------------------------------------------------------
+reload_shell_env() {
+    local rc="$HOME/.bashrc"
+    [[ -f "$rc" ]] || { warn "未找到 $rc，跳过环境刷新"; return 0; }
 
-  if [[ ! -f "$rc" ]]; then
-    log_warn "未找到 $rc，跳过环境刷新"
-    return 0
-  fi
-
-  log_info "执行 source $rc ..."
-
-  # 在子 shell 中执行，避免 .bashrc 内的 exit / set -e / 未定义变量 / IFS 改动影响卸载脚本
-  if ( set +euo pipefail; IFS=$' \t\n'; source "$rc" >/dev/null 2>&1 ); then
-    log_info "source $rc 执行完成"
-  else
-    log_warn "source $rc 返回非零（不影响卸载结果），请手动检查该文件"
-  fi
-
-  # 脚本是独立进程，source 只能刷新子进程，无法改变父终端环境
-  log_info "注意: 当前终端环境需手动刷新，可执行: source ~/.bashrc，或直接执行 exec bash 以替换为新 shell（推荐）"
+    log "尝试 source \"$rc\" 以刷新当前脚本环境..."
+    set +u; set +e
+    # shellcheck disable=SC1090
+    source "$rc" >/dev/null 2>&1
+    local rc_code=$?
+    set -e; set -u
+    if [[ $rc_code -ne 0 ]]; then
+        warn "source $rc 返回非零（$rc_code），不影响卸载结果，请手动检查该文件"
+    fi
 }
 
-# ========== 主流程 ==========
+print_final_hint() {
+    echo
+    echo "注意: 脚本内的 source 只作用于脚本自身进程，不会改变你当前交互式 shell 的环境。"
+    echo "请在你的当前终端执行以下命令之一，使配置生效:"
+    echo "    source ~/.bashrc"
+    echo "    exec bash"
+    echo "或者直接重开一个终端。"
+}
+
+# ---------------------------------------------------------------------------
+# 主流程
+# ---------------------------------------------------------------------------
 main() {
-  confirm_uninstall
+    confirm_uninstall
 
-  # 1) 先备份并清理 shell 配置
-  log_info "开始清理 shell 配置..."
-  cleanup_config_file "$HOME/.bashrc"
-  cleanup_config_file "$HOME/.profile"
+    log "开始清理 shell 配置..."
+    cleanup_config_file "$HOME/.bashrc"
+    cleanup_config_file "$HOME/.profile"
 
-  # 2) 删除工具目录
-  log_info "开始删除工具目录..."
-  remove_pyenv
-  remove_g
-  remove_nvm
-  remove_gopath
+    log "开始删除工具目录..."
+    remove_pyenv
+    remove_g
+    remove_nvm
+    remove_gopath
 
-  # 3) 残留检查
-  post_check
+    post_check
 
-  # 4) 完成提示
-  echo -e "\n${GREEN}======= 卸载完成 =======${NC}"
-  if [[ -d "$BACKUP_DIR" ]]; then
-    echo -e "配置备份目录: ${GREEN}$BACKUP_DIR${NC}"
-    echo -e "如需回滚，可执行: ${GREEN}cp -p $BACKUP_DIR/.bashrc.bak ~/.bashrc${NC}"
-    echo -e "                 ${GREEN}cp -p $BACKUP_DIR/.profile.bak ~/.profile${NC}"
-  fi
+    echo
+    log "======= 卸载完成 ======="
+    if [[ -d "$BACKUP_DIR" ]]; then
+        echo "配置备份目录: $BACKUP_DIR"
+        echo "如需回滚，可执行:"
+        echo "    cp -p $BACKUP_DIR/.bashrc.bak ~/.bashrc"
+        echo "    cp -p $BACKUP_DIR/.profile.bak ~/.profile"
+    fi
 
-  # 5) 按要求执行 source ~/.bashrc
-  refresh_env
+    reload_shell_env
+    print_final_hint
 }
 
 main "$@"

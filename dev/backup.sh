@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OUTPUT_DIR="${BACKUP_OUTPUT_DIR:-$PWD}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+OUTPUT_DIR="${BACKUP_OUTPUT_DIR:-$SCRIPT_DIR/dev/tools}"
 STAMP="$(date +%Y%m%d%H%M%S)"
 SKIP_MISSING=0
 
@@ -37,9 +38,33 @@ EXCLUDES=(
     '--exclude=rename_test.sh'
     '--exclude=update_test_mocks.sh'
     '--exclude=install.sh'
-    '--exclude=package.json'
-    '--exclude=package-lock.json'
+    '--exclude=package.json'          # 全局排除：用于清理项目文件
+    '--exclude=package-lock.json'     # 全局排除：用于清理项目文件
 )
+
+log()   { printf '\033[36m[INFO]\033[0m %s\n' "$*"; }
+warn()  { printf '\033[33m[WARN]\033[0m %s\n' "$*" >&2; }
+error() { printf '\033[31m[ERROR]\033[0m %s\n' "$*" >&2; }
+
+# ---------------------------------------------------------------------------
+# 临时目录管理（异常退出也能清理）
+# ---------------------------------------------------------------------------
+CLEANUP_DIRS=()
+_cleanup_trap() {
+    local d
+    for d in "${CLEANUP_DIRS[@]+"${CLEANUP_DIRS[@]}"}"; do
+        [[ -d "$d" ]] && rm -rf -- "$d"
+    done
+}
+trap _cleanup_trap EXIT
+
+new_tmpdir() {
+    local var_name="$1"
+    local d
+    d=$(mktemp -d)
+    CLEANUP_DIRS+=("$d")
+    printf -v "$var_name" '%s' "$d"
+}
 
 usage() {
     cat <<'EOF'
@@ -51,7 +76,8 @@ usage() {
 指定具体工具时，如果该工具不存在则报错退出。
 
 环境变量:
-  BACKUP_OUTPUT_DIR  备份输出目录，默认当前目录
+  BACKUP_OUTPUT_DIR  备份输出目录，默认 <script_dir>/dev/tools
+                     （与 restore.sh 的自动模式默认路径一致）
   PYENV_ROOT         pyenv 根目录，默认 $HOME/.pyenv
   GOPATH             Go 工作目录，默认 $HOME/go；若 /go 存在也会一并打包
 
@@ -60,6 +86,12 @@ usage() {
   ./backup.sh g nvm
   ./backup.sh pyenv
   BACKUP_OUTPUT_DIR=~/backups ./backup.sh all
+
+配合 restore.sh:
+  默认输出到 <script_dir>/dev/tools，直接运行 ./restore.sh 即可自动恢复
+  未安装的工具。若使用 BACKUP_OUTPUT_DIR 指定其他目录，请把备份放到
+  restore.sh 的 BACKUP_BASE（默认 <script_dir>/dev/tools）下，或使用
+  ./restore.sh <dir> 指定目录。
 EOF
 }
 
@@ -70,7 +102,7 @@ backup_g() {
     local found=0
     local packed_paths=()
 
-    tmp="$(mktemp -d)"
+    new_tmpdir tmp
 
     # pack_dir <源目录> <归档内目标路径> [strict]
     #   strict=1（默认）：失败返回非零
@@ -97,7 +129,7 @@ backup_g() {
             if [ "$strict" -eq 1 ]; then
                 return 1
             fi
-            echo "警告: 打包 $src 时出错（可能权限不足），已跳过。" >&2
+            warn "打包 $src 时出错（可能权限不足），已跳过。"
             rm -rf "${tmp:?}/$dst"
             return 0
         fi
@@ -109,11 +141,11 @@ backup_g() {
 
     # 原有 g 相关目录（保留相对结构，便于恢复）
     pack_dir "$HOME/.${tool_name}" ".${tool_name}" \
-        || { rm -rf "$tmp"; echo "错误: 打包 $HOME/.${tool_name} 失败" >&2; return 1; }
+        || { error "打包 $HOME/.${tool_name} 失败"; return 1; }
     pack_dir "$HOME/.goenv" ".goenv" \
-        || { rm -rf "$tmp"; echo "错误: 打包 $HOME/.goenv 失败" >&2; return 1; }
+        || { error "打包 $HOME/.goenv 失败"; return 1; }
     pack_dir "$HOME/.config/${tool_name}" ".config/${tool_name}" \
-        || { rm -rf "$tmp"; echo "错误: 打包 $HOME/.config/${tool_name} 失败" >&2; return 1; }
+        || { error "打包 $HOME/.config/${tool_name} 失败"; return 1; }
 
     # GOPATH（install.sh 默认 $HOME/go；容器中常为 /go）
     local gopath="${GOPATH:-$HOME/go}"
@@ -125,7 +157,7 @@ backup_g() {
             *)         gopath_arc="_abs$(printf '%s' "$gopath" | tr '/' '_')" ;;
         esac
         pack_dir "$gopath" "$gopath_arc" \
-            || { rm -rf "$tmp"; echo "错误: 打包 GOPATH($gopath) 失败" >&2; return 1; }
+            || { error "打包 GOPATH($gopath) 失败"; return 1; }
     fi
 
     # /go 目录（当 GOPATH 不是 /go 时单独打包；失败仅警告）
@@ -134,12 +166,11 @@ backup_g() {
     fi
 
     if [ "$found" -eq 0 ]; then
-        rm -rf "$tmp"
         if [ "$SKIP_MISSING" -eq 1 ]; then
-            echo "警告: 未找到 g/go 相关目录，跳过 g 备份。" >&2
+            warn "未找到 g/go 相关目录，跳过 g 备份。"
             return 0
         fi
-        echo "错误: 未找到 g/go 相关目录（\$HOME/.g、\$GOPATH、/go 等均不存在）" >&2
+        error "未找到 g/go 相关目录（\$HOME/.g、\$GOPATH、/go 等均不存在）"
         return 1
     fi
 
@@ -156,8 +187,8 @@ backup_g() {
     tar -czf "$out" -C "$tmp" .
     rm -rf "$tmp"
 
-    echo "备份已创建: $out"
-    echo "注意: g/go 版本依赖平台，平台信息已保存在归档内的 ./platform_info"
+    log "备份已创建: $out"
+    log "注意: g/go 版本依赖平台，平台信息已保存在归档内的 ./platform_info"
 }
 
 backup_nvm() {
@@ -165,16 +196,35 @@ backup_nvm() {
 
     if [ ! -d "$HOME/.nvm" ]; then
         if [ "$SKIP_MISSING" -eq 1 ]; then
-            echo "警告: $HOME/.nvm 不存在，跳过 nvm 备份。" >&2
+            warn "$HOME/.nvm 不存在，跳过 nvm 备份。"
             return 0
         fi
-        echo "错误: .nvm 目录不存在: $HOME/.nvm" >&2
+        error ".nvm 目录不存在: $HOME/.nvm"
         return 1
     fi
 
+    # ------------------------------------------------------------------
+    # 关键修复：nvm 专用排除列表，去掉 package.json / package-lock.json。
+    # npm 自身位于 .nvm/versions/node/<ver>/lib/node_modules/npm/，
+    # 其内部 package.json 是 npm 运行必需文件，不能排除，否则恢复后
+    # 会出现 "Cannot find module '../../package.json'"。
+    # ------------------------------------------------------------------
+    local nvm_excludes=()
+    local ex
+    for ex in "${EXCLUDES[@]}"; do
+        case "$ex" in
+            --exclude=package.json|--exclude=package-lock.json)
+                continue
+                ;;
+            *)
+                nvm_excludes+=("$ex")
+                ;;
+        esac
+    done
+
     # 从 $HOME 打包，归档内第一层为 .nvm/
-    tar "${EXCLUDES[@]}" -czf "$out" -C "$HOME" .nvm
-    echo "备份已创建: $out"
+    tar "${nvm_excludes[@]}" -czf "$out" -C "$HOME" .nvm
+    log "备份已创建: $out"
 }
 
 backup_pyenv() {
@@ -188,10 +238,10 @@ backup_pyenv() {
 
     if [ ! -d "$pyenv_root" ]; then
         if [ "$SKIP_MISSING" -eq 1 ]; then
-            echo "警告: pyenv 根目录不存在: $pyenv_root，跳过 pyenv 备份。" >&2
+            warn "pyenv 根目录不存在: $pyenv_root，跳过 pyenv 备份。"
             return 0
         fi
-        echo "错误: pyenv 根目录不存在: $pyenv_root" >&2
+        error "pyenv 根目录不存在: $pyenv_root"
         return 1
     fi
 
@@ -202,7 +252,7 @@ backup_pyenv() {
 
     # 从父目录打包，归档内第一层为 <pyenv_base>/（默认即 .pyenv/）
     tar "${EXCLUDES[@]}" -czf "$out" -C "$pyenv_parent" "$pyenv_base"
-    echo "备份已创建: $out"
+    log "备份已创建: $out"
 }
 
 # ---------------------------------------------------------------------------
@@ -227,7 +277,7 @@ else
                 exit 0
                 ;;
             *)
-                echo "未知参数: $arg" >&2
+                error "未知参数: $arg"
                 usage
                 exit 1
                 ;;
@@ -259,6 +309,9 @@ fi
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
+log "=== 备份开始 ==="
+log "输出目录: $OUTPUT_DIR"
+
 for tool in "${SELECTED[@]}"; do
     case "$tool" in
         g)     backup_g ;;
@@ -267,4 +320,4 @@ for tool in "${SELECTED[@]}"; do
     esac
 done
 
-echo "全部选定备份已完成，输出目录: $OUTPUT_DIR"
+log "全部选定备份已完成，输出目录: $OUTPUT_DIR"
