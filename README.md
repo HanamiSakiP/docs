@@ -15,6 +15,28 @@
 docsify serve .
 ```
 
+<details>
+<summary>tools</summary>
+
+node
+```bash
+npm i docsify-cli -g
+npm install -g @opencode/cli
+npm install -g @openai/codex
+npm install -g @anthropic-ai/claude-code
+# go
+go install github.com/restic/restic/cmd/restic@latest
+go install github.com/rclone/rclone@latest
+go install github.com/junegunn/fzf@latest
+# GitHub
+go install github.com/cli/cli/v2/cmd/gh@latest
+# GitLab
+go install gitlab.com/gitlab-org/cli/cmd/glab@latest
+```
+
+</details>
+
+
   * [1. tool](assets/docs/AI/Linux/debian.md)
   * [2. go AND pip](assets/docs/AI/Linux/go.md)
   * [3. WebDAV](assets/docs/AI/Linux/webdav.md)
