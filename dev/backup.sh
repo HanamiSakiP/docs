@@ -6,7 +6,7 @@ OUTPUT_DIR="${BACKUP_OUTPUT_DIR:-$SCRIPT_DIR/dev/tools}"
 STAMP="$(date +%Y%m%d%H%M%S)"
 SKIP_MISSING=0
 
-# 通用排除模式（tar 参数形式，必须以 --exclude= 开头）
+# 通用排除模式（tar 参数形式）
 EXCLUDES=(
     '--exclude=.git'
     '--exclude=.github'
@@ -38,8 +38,8 @@ EXCLUDES=(
     '--exclude=rename_test.sh'
     '--exclude=update_test_mocks.sh'
     '--exclude=install.sh'
-    '--exclude=package.json'          # 全局排除：用于清理项目文件
-    '--exclude=package-lock.json'     # 全局排除：用于清理项目文件
+    '--exclude=package.json'
+    '--exclude=package-lock.json'
 )
 
 log()   { printf '\033[36m[INFO]\033[0m %s\n' "$*"; }
@@ -47,23 +47,31 @@ warn()  { printf '\033[33m[WARN]\033[0m %s\n' "$*" >&2; }
 error() { printf '\033[31m[ERROR]\033[0m %s\n' "$*" >&2; }
 
 # ---------------------------------------------------------------------------
-# 临时目录管理（异常退出也能清理）
+# tar 选项能力检测（实测，避免 --help 误判）
 # ---------------------------------------------------------------------------
-CLEANUP_DIRS=()
-_cleanup_trap() {
-    local d
-    for d in "${CLEANUP_DIRS[@]+"${CLEANUP_DIRS[@]}"}"; do
-        [[ -d "$d" ]] && rm -rf -- "$d"
-    done
-}
-trap _cleanup_trap EXIT
+TAR_WARN_OPTS=()
+if tar --warning=no-file-changed -cf /dev/null /dev/null >/dev/null 2>&1; then
+    TAR_WARN_OPTS=(--warning=no-file-changed)
+else
+    warn "当前 tar 不支持 --warning=no-file-changed，将容忍 rc=1 警告输出。"
+fi
 
-new_tmpdir() {
-    local var_name="$1"
-    local d
-    d=$(mktemp -d)
-    CLEANUP_DIRS+=("$d")
-    printf -v "$var_name" '%s' "$d"
+TAR_EXTRA_OPTS=()
+if tar --ignore-failed-read -cf /dev/null /dev/null >/dev/null 2>&1; then
+    TAR_EXTRA_OPTS=(--ignore-failed-read)
+else
+    warn "当前 tar 不支持 --ignore-failed-read，遇到 ELOOP 等读错误会中断该工具备份。"
+fi
+
+# ---------------------------------------------------------------------------
+# 磁盘空间轻量检查（不阻断，仅 WARN）
+# ---------------------------------------------------------------------------
+check_disk() {
+    local avail_kb
+    avail_kb=$(df -Pk "$OUTPUT_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+    if [ -n "$avail_kb" ] && [ "$avail_kb" -lt 204800 ]; then
+        warn "输出目录 $OUTPUT_DIR 剩余空间较小（${avail_kb}KB），备份可能失败。"
+    fi
 }
 
 usage() {
@@ -95,19 +103,25 @@ usage() {
 EOF
 }
 
+# ---------------------------------------------------------------------------
+# g / go 备份
+# ---------------------------------------------------------------------------
 backup_g() {
     local tool_name="g"
     local out="$OUTPUT_DIR/${tool_name}_backup_${STAMP}.tar.gz"
-    local tmp
+    local tmp pack_stage
     local found=0
     local packed_paths=()
 
-    new_tmpdir tmp
+    tmp="$(mktemp -d)"
+    pack_stage="$(mktemp -d)"
+    trap 'rm -rf -- "$tmp" "$pack_stage"' EXIT
 
     # pack_dir <源目录> <归档内目标路径> [strict]
     #   strict=1（默认）：失败返回非零
     #   strict=0        ：失败仅警告并跳过
-    # 会把真实路径记录到 packed_paths 中，避免同一目录被重复打包
+    # 两步式：先 tar 到 pack_stage 临时文件，再解压到 tmp。
+    # 避免 `tar -cf - | tar -xf -` 在 pipefail 下退出码语义混乱。
     pack_dir() {
         local src="$1"
         local dst="$2"
@@ -124,13 +138,47 @@ backup_g() {
 
         mkdir -p "$tmp/$dst"
 
-        if ! (cd "$src" && tar "${EXCLUDES[@]}" -cf - .) \
-                | (cd "$tmp/$dst" && tar -xpf -); then
+        local tarfile
+        tarfile="$(mktemp "$pack_stage/pack.XXXXXX.tar")" || {
             if [ "$strict" -eq 1 ]; then
+                error "无法创建临时 tar 文件"
                 return 1
             fi
-            warn "打包 $src 时出错（可能权限不足），已跳过。"
-            rm -rf "${tmp:?}/$dst"
+            warn "无法创建临时 tar 文件，跳过 $src"
+            return 0
+        }
+
+        local crc=0
+        ( cd "$src" && tar \
+            "${TAR_WARN_OPTS[@]+"${TAR_WARN_OPTS[@]}"}" \
+            "${TAR_EXTRA_OPTS[@]+"${TAR_EXTRA_OPTS[@]}"}" \
+            "${EXCLUDES[@]}" -cf "$tarfile" . ) || crc=$?
+
+        if [ "$crc" -gt 1 ]; then
+            rm -f -- "$tarfile"
+            rm -rf -- "${tmp:?}/$dst"
+            if [ "$strict" -eq 1 ]; then
+                error "tar 打包 $src 失败（rc=$crc）"
+                return 1
+            fi
+            warn "tar 打包 $src 失败（rc=$crc），已跳过"
+            return 0
+        fi
+        if [ "$crc" -eq 1 ]; then
+            warn "打包 $src 时部分文件读取过程中发生变化（已容忍）"
+        fi
+
+        local xrc=0
+        ( cd "$tmp/$dst" && tar -xpf "$tarfile" ) || xrc=$?
+        rm -f -- "$tarfile"
+
+        if [ "$xrc" -ne 0 ]; then
+            rm -rf -- "${tmp:?}/$dst"
+            if [ "$strict" -eq 1 ]; then
+                error "解压 $src 到临时区失败（rc=$xrc）"
+                return 1
+            fi
+            warn "解压 $src 到临时区失败（rc=$xrc），已跳过"
             return 0
         fi
 
@@ -138,6 +186,8 @@ backup_g() {
         found=1
         return 0
     }
+
+    check_disk
 
     # 原有 g 相关目录（保留相对结构，便于恢复）
     pack_dir "$HOME/.${tool_name}" ".${tool_name}" \
@@ -152,8 +202,8 @@ backup_g() {
     if [ -d "$gopath" ]; then
         local gopath_arc
         case "$gopath" in
-            "$HOME"/*) gopath_arc="${gopath#"$HOME"/}" ;;      # 归档内用相对 $HOME 的路径
-            "/go")     gopath_arc="_go" ;;                     # 与下面的 /go 分支对应
+            "$HOME"/*) gopath_arc="${gopath#"$HOME"/}" ;;
+            "/go")     gopath_arc="_go" ;;
             *)         gopath_arc="_abs$(printf '%s' "$gopath" | tr '/' '_')" ;;
         esac
         pack_dir "$gopath" "$gopath_arc" \
@@ -185,12 +235,16 @@ backup_g() {
     } > "$tmp/platform_info"
 
     tar -czf "$out" -C "$tmp" .
-    rm -rf "$tmp"
+    rm -rf -- "$tmp" "$pack_stage"
+    trap - EXIT
 
     log "备份已创建: $out"
     log "注意: g/go 版本依赖平台，平台信息已保存在归档内的 ./platform_info"
 }
 
+# ---------------------------------------------------------------------------
+# nvm 备份
+# ---------------------------------------------------------------------------
 backup_nvm() {
     local out="$OUTPUT_DIR/nvm_backup_${STAMP}.tar.gz"
 
@@ -203,30 +257,41 @@ backup_nvm() {
         return 1
     fi
 
-    # ------------------------------------------------------------------
-    # 关键修复：nvm 专用排除列表，去掉 package.json / package-lock.json。
+    check_disk
+
+    # nvm 专用排除：去掉 package.json / package-lock.json。
     # npm 自身位于 .nvm/versions/node/<ver>/lib/node_modules/npm/，
-    # 其内部 package.json 是 npm 运行必需文件，不能排除，否则恢复后
-    # 会出现 "Cannot find module '../../package.json'"。
-    # ------------------------------------------------------------------
+    # 其内部 package.json 是 npm 运行必需文件，不能排除。
     local nvm_excludes=()
     local ex
     for ex in "${EXCLUDES[@]}"; do
         case "$ex" in
-            --exclude=package.json|--exclude=package-lock.json)
-                continue
-                ;;
-            *)
-                nvm_excludes+=("$ex")
-                ;;
+            --exclude=package.json|--exclude=package-lock.json) continue ;;
+            *) nvm_excludes+=("$ex") ;;
         esac
     done
 
-    # 从 $HOME 打包，归档内第一层为 .nvm/
-    tar "${nvm_excludes[@]}" -czf "$out" -C "$HOME" .nvm
+    local rc=0
+    tar "${TAR_WARN_OPTS[@]+"${TAR_WARN_OPTS[@]}"}" \
+        "${TAR_EXTRA_OPTS[@]+"${TAR_EXTRA_OPTS[@]}"}" \
+        "${nvm_excludes[@]}" \
+        -czf "$out" -C "$HOME" .nvm || rc=$?
+
+    if [ "$rc" -gt 1 ]; then
+        rm -f -- "$out"
+        error "打包 $HOME/.nvm 失败（tar rc=$rc，详见上方 tar 输出）"
+        return 1
+    fi
+    if [ "$rc" -eq 1 ]; then
+        warn "nvm 备份过程中部分文件被跳过或发生变化（已容忍，归档可用）"
+    fi
+
     log "备份已创建: $out"
 }
 
+# ---------------------------------------------------------------------------
+# pyenv 备份
+# ---------------------------------------------------------------------------
 backup_pyenv() {
     local pyenv_root
     local pyenv_parent
@@ -245,13 +310,27 @@ backup_pyenv() {
         return 1
     fi
 
-    # 绝对化，便于取父目录
+    check_disk
+
     pyenv_root="$(cd "$pyenv_root" && pwd)"
     pyenv_parent="$(dirname "$pyenv_root")"
     pyenv_base="$(basename "$pyenv_root")"
 
-    # 从父目录打包，归档内第一层为 <pyenv_base>/（默认即 .pyenv/）
-    tar "${EXCLUDES[@]}" -czf "$out" -C "$pyenv_parent" "$pyenv_base"
+    local rc=0
+    tar "${TAR_WARN_OPTS[@]+"${TAR_WARN_OPTS[@]}"}" \
+        "${TAR_EXTRA_OPTS[@]+"${TAR_EXTRA_OPTS[@]}"}" \
+        "${EXCLUDES[@]}" \
+        -czf "$out" -C "$pyenv_parent" "$pyenv_base" || rc=$?
+
+    if [ "$rc" -gt 1 ]; then
+        rm -f -- "$out"
+        error "打包 pyenv($pyenv_root) 失败（tar rc=$rc，详见上方 tar 输出）"
+        return 1
+    fi
+    if [ "$rc" -eq 1 ]; then
+        warn "pyenv 备份过程中部分文件被跳过或发生变化（已容忍，归档可用）"
+    fi
+
     log "备份已创建: $out"
 }
 
@@ -312,12 +391,25 @@ OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 log "=== 备份开始 ==="
 log "输出目录: $OUTPUT_DIR"
 
+# 每个工具在子 shell 中执行：函数内 set -e 保持生效，
+# 一个工具失败也不会终止主循环，最后汇总失败工具。
+FAILED_TOOLS=()
 for tool in "${SELECTED[@]}"; do
+    rc=0
     case "$tool" in
-        g)     backup_g ;;
-        nvm)   backup_nvm ;;
-        pyenv) backup_pyenv ;;
+        g)     ( backup_g )     || rc=$? ;;
+        nvm)   ( backup_nvm )   || rc=$? ;;
+        pyenv) ( backup_pyenv ) || rc=$? ;;
     esac
+    if [ "$rc" -ne 0 ]; then
+        error "$tool 备份失败（rc=$rc），继续处理其他工具。"
+        FAILED_TOOLS+=("$tool")
+    fi
 done
 
-log "全部选定备份已完成，输出目录: $OUTPUT_DIR"
+log "备份输出目录: $OUTPUT_DIR"
+if [ "${#FAILED_TOOLS[@]}" -gt 0 ]; then
+    error "以下工具备份失败: ${FAILED_TOOLS[*]}"
+    exit 1
+fi
+log "=== 全部选定备份已完成 ==="
