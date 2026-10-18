@@ -45,6 +45,5 @@ echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian-security ${CODENAME}-secur
 fi
 
 apt update
-apt install -y curl git nano
 apt clean
 rm -rf /var/lib/apt/lists/*
