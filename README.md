@@ -12,9 +12,10 @@
 
 * start
 ```bash
-git clone https://github.com/HanamiSakiP/AI.git && cd AI
-chmod +x *.sh && ./install
+git clone https://github.com/HanamiSakiP/AI.git && cd AI/dev
+chmod +x *.sh && ./install.sh
 exec bash
+cd ..
 docsify serve .
 ```
 
@@ -23,24 +24,35 @@ docsify serve .
 
 docker
 ```bash
+# 最新版debian
 docker pull debian
 # 精简版debian
 docker pull debian:trixie-slim
-podman run -it --name my-debian debian:latest /bin/bash
-podman start -ai my-debian
+# 创建并进入构建好的容器
+docker run -it --name test-debian debian:latest /bin/bash
+# 使用Dockerfile构建
+# docker build -t my-debian .
+# docker images
+# docker run -it --rm my-debian
+# 重新进入构建好的容器
+docker start -ai test-debian
 # 强制删除容器
-# podman rm -f debian-test
+# docker rm -f debian-test
 # 按标签删除镜像
-# podman rmi debian:latest
+# docker rmi debian:latest
 # 或者按 ID 删除镜像
-# podman rmi 99339bdd341a
+# docker rmi 99339bdd341a
 # 复制文件出当前目录
-podman cp my-debian:/AI ./
+docker cp my-debian:/AI ./
 ```
 apt
 ```bash
 apt update
-apt install curl git nano
+apt install curl git nano -y
+```
+```bash
+apt update
+# pyenv依赖
 apt install -y build-essential \
 libssl-dev \
 zlib1g-dev \
@@ -51,23 +63,16 @@ libffi-dev \
 liblzma-dev \
 pkg-config
 ```
-镜像源
-```bash
-# go
-export GOPROXY=https://goproxy.cn,direct
-# npm
-npm install docsify-cli -g --registry=https://registry.npmmirror.com
-# python
-pip install httpie -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
-```
+
 
 </details>
 
 <details>
 <summary>tools</summary>
 
-node
+cli
 ```bash
+npm i -g nrm
 npm i docsify-cli -g
 npm install -g @opencode/cli
 npm install -g @openai/codex
@@ -80,7 +85,47 @@ go install github.com/junegunn/fzf@latest
 go install github.com/cli/cli/v2/cmd/gh@latest
 # GitLab
 go install gitlab.com/gitlab-org/cli/cmd/glab@latest
+# python
+pip install httpie
 ```
+
+</details>
+
+<details>
+<summary>镜像源切换</summary>
+
+```bash
+# go临时
+export GOPROXY=https://goproxy.cn,direct
+# 查看当前go源
+go env | grep GOPROXY
+# npm源切换工具
+npm i -g nrm
+# 2、查看可选镜像源
+nrm ls
+# 3、切换 huawei 镜像源
+nrm use huawei
+# npm临时示例
+# npm install docsify-cli -g --registry=https://registry.npmmirror.com
+# 查看当前npm源
+npm config get registry
+# python临时示例
+# pip install httpie -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+# 查看当前pip源
+pip config list
+# 全局配置git
+git config --global url."https://ghproxy.com/https://github.com/".insteadOf "https://github.com/"
+# 正常使用
+git clone https://github.com/HanamiSakiP/AI.git
+# 取消这个镜像
+git config --global --unset url."https://ghproxy.com/https://github.com/"
+# 临时使用
+# git clone https://ghproxy.com/https://github.com/HanamiSakiP/AI.git
+# 查看当前git源
+git config --global -l | grep insteadOf
+```
+
+</details>
 
 </details>
 
