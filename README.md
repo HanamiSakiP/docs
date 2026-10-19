@@ -18,6 +18,25 @@ exec bash
 cd ..
 docsify serve .
 ```
+```bash
+# 脚本包装成命令
+mkdir -p ~/.local/bin
+chmod +x dev/*.sh
+# 命令名为mytool
+cp ./dev/install.sh ~/.local/bin/mytool
+chmod +x ~/.local/bin/mytool
+# 写入环境
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+# 执行命令
+mytool
+# 每天02点执行rclone同步
+0 2 * * * flock -n /tmp/rclone.lock ~/go/bin/rclone sync /本地/路径 remote:云端路径 --log-file /home/你的用户名/rclone-sync.log --log-level INFO
+# 安装tui工具
+gh release download --repo denisidoro/navi --pattern "*x86_64-unknown-linux-musl*"
+gh release download --repo sxyazi/yazi --pattern "*x86_64-unknown-linux-musl*"
+gh release download --repo zellij-org/zellij --pattern "*x86_64-unknown-linux-musl*"
+```
 
 <details>
 <summary>test</summary>
@@ -48,10 +67,9 @@ docker cp my-debian:/AI ./
 apt
 ```bash
 apt update
-apt install curl git nano -y
+apt install curl git -y # nano
 ```
 ```bash
-apt update
 # pyenv依赖
 apt install -y build-essential \
 libssl-dev \
@@ -74,6 +92,7 @@ cli
 ```bash
 npm i -g nrm
 npm i docsify-cli -g
+npm install -g @earendil-works/pi-coding-agent
 npm install -g @opencode/cli
 npm install -g @openai/codex
 npm install -g @anthropic-ai/claude-code
@@ -81,6 +100,13 @@ npm install -g @anthropic-ai/claude-code
 go install github.com/restic/restic/cmd/restic@latest
 go install github.com/rclone/rclone@latest
 go install github.com/junegunn/fzf@latest
+go install github.com/micro-editor/micro/v2@latest
+# go-ai
+go install github.com/hybridgroup/yzma@latest
+go install github.com/gpustack/gguf-parser-go/cmd/gguf-parser@latest
+# go-docker
+go install github.com/google/go-containerregistry/cmd/crane@latest
+go install github.com/regclient/regclient/cmd/regctl@latest
 # GitHub
 go install github.com/cli/cli/v2/cmd/gh@latest
 # GitLab
