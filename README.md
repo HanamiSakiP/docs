@@ -21,10 +21,8 @@ docsify serve .
 ```bash
 # 脚本包装成命令
 mkdir -p ~/.local/bin
-chmod +x dev/*.sh
-# 命令名为mytool
-cp ./dev/install.sh ~/.local/bin/mytool
-chmod +x ~/.local/bin/mytool
+# 命令名为dev
+install -m755 dev ~/.local/bin/
 # 写入环境
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
@@ -93,6 +91,7 @@ cli
 npm i -g nrm
 npm i docsify-cli -g
 npm install -g @earendil-works/pi-coding-agent
+npm install --global rea-agents
 npm install -g @opencode/cli
 npm install -g @openai/codex
 npm install -g @anthropic-ai/claude-code
@@ -103,6 +102,7 @@ go install github.com/junegunn/fzf@latest
 go install github.com/micro-editor/micro/v2@latest
 # go-ai
 go install github.com/hybridgroup/yzma@latest
+go install github.com/charmbracelet/crush@latest
 go install github.com/gpustack/gguf-parser-go/cmd/gguf-parser@latest
 # go-docker
 go install github.com/google/go-containerregistry/cmd/crane@latest
@@ -113,6 +113,8 @@ go install github.com/cli/cli/v2/cmd/gh@latest
 go install gitlab.com/gitlab-org/cli/cmd/glab@latest
 # python
 pip install httpie
+pip install cli-anything-hub
+npx skills add HKUDS/CLI-Anything --skill cli-hub-meta-skill -g -y
 ```
 
 </details>

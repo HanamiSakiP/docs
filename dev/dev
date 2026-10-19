@@ -1,0 +1,1320 @@
+#!/usr/bin/env bash
+# devmgr - 一体化开发工具管理器
+# 支持 pyenv / g / nvm 的安装、备份、恢复
+#
+# 安装: cp devmgr ~/.local/bin/devmgr && chmod +x ~/.local/bin/devmgr
+# 或:   ln -sf "$(pwd)/devmgr" ~/.local/bin/devmgr
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="1.0.0"
+PROG_NAME="${0##*/}"
+
+# ================================================================
+# 路径解析（支持软链接调用）
+# ================================================================
+resolve_script_dir() {
+    local src="${BASH_SOURCE[0]}" dir
+    while [ -L "$src" ]; do
+        dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+        src="$(readlink "$src")"
+        [[ "$src" != /* ]] && src="$dir/$src"
+    done
+    cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd
+}
+SCRIPT_DIR="$(resolve_script_dir)"
+# 脚本自身真实路径（跟随软链接，用于 self-install / 帮助提示）
+SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+[ -n "$SELF_PATH" ] || SELF_PATH="$SCRIPT_DIR/$PROG_NAME"
+
+BACKUP_DIR="${DEVMGR_BACKUP_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/devmgr/backups}"
+LEGACY_BACKUP_DIR="$SCRIPT_DIR/dev/tools"
+
+# ================================================================
+# 颜色 & 日志
+# ================================================================
+if [ -t 1 ]; then
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'
+    BLUE=$'\033[0;34m'; CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; NC=$'\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; DIM=''; NC=''
+fi
+
+log_info()  { printf '%s[INFO]%s %s\n' "$CYAN"  "$NC" "$*"; }
+log_ok()    { printf '%s[ OK ]%s %s\n' "$GREEN" "$NC" "$*"; }
+log_warn()  { printf '%s[WARN]%s %s\n' "$YELLOW" "$NC" "$*" >&2; }
+log_error() { printf '%s[ERR ]%s %s\n' "$RED"   "$NC" "$*" >&2; }
+
+step()    { printf '%s[*]%s %s\n' "$BLUE" "$NC" "$*"; }
+numstep() { printf '%s[%s/%s]%s %s\n' "$BLUE" "$1" "$2" "$NC" "$3"; }
+substep() { printf '      %s→%s %s\n' "$DIM" "$NC" "$*"; }
+
+# ================================================================
+# tar 能力检测
+# ================================================================
+TAR_WARN_OPTS=()
+if tar --warning=no-file-changed -cf /dev/null /dev/null >/dev/null 2>&1; then
+    TAR_WARN_OPTS=(--warning=no-file-changed)
+else
+    log_warn "当前 tar 不支持 --warning=no-file-changed（将容忍 rc=1）"
+fi
+
+TAR_EXTRA_OPTS=()
+if tar --ignore-failed-read -cf /dev/null /dev/null >/dev/null 2>&1; then
+    TAR_EXTRA_OPTS=(--ignore-failed-read)
+else
+    log_warn "当前 tar 不支持 --ignore-failed-read（ELOOP 等读错误会中断）"
+fi
+
+# ================================================================
+# 通用排除模式
+# ================================================================
+EXCLUDES=(
+    '--exclude=.git' '--exclude=.github' '--exclude=.gitignore'
+    '--exclude=.gitmodules' '--exclude=.gitattributes' '--exclude=.cache'
+    '--exclude=test' '--exclude=tests' '--exclude=docs' '--exclude=man'
+    '--exclude=*.md' '--exclude=LICENSE' '--exclude=LICENSE.*'
+    '--exclude=Makefile' '--exclude=Dockerfile'
+    '--exclude=*.png' '--exclude=*.gif' '--exclude=*.jpg' '--exclude=*.jpeg'
+    '--exclude=*.svg' '--exclude=*.ico'
+    '--exclude=*.pyc' '--exclude=__pycache__' '--exclude=*.pyo' '--exclude=*.log'
+    '--exclude=tmp' '--exclude=temp'
+    '--exclude=rename_test.sh' '--exclude=update_test_mocks.sh'
+    '--exclude=install.sh' '--exclude=package.json' '--exclude=package-lock.json'
+)
+
+# ================================================================
+# 镜像配置
+# ================================================================
+USE_CN_MIRROR="${USE_CN_MIRROR:-0}"
+CN_GITHUB_PROXY="${CN_GITHUB_PROXY:-https://ghfast.top/}"
+CN_NODE_MIRROR="${CN_NODE_MIRROR:-https://npmmirror.com/mirrors/node}"
+CN_GO_MIRROR="${CN_GO_MIRROR:-https://golang.google.cn/dl/}"
+CN_PYTHON_MIRROR="${CN_PYTHON_MIRROR:-https://registry.npmmirror.com/-/binary/python}"
+
+# ================================================================
+# 工具状态检测
+# ================================================================
+tool_install_dir() {
+    case "$1" in
+        pyenv) printf '%s' "${PYENV_ROOT:-$HOME/.pyenv}" ;;
+        g)     printf '%s' "$HOME/.g" ;;
+        nvm)   printf '%s' "$HOME/.nvm" ;;
+    esac
+}
+
+is_tool_installed() {
+    case "$1" in
+        pyenv)
+            [ -x "${PYENV_ROOT:-$HOME/.pyenv}/bin/pyenv" ] && return 0
+            command -v pyenv >/dev/null 2>&1
+            ;;
+        g)
+            [ -x "$HOME/.g/bin/g" ] && return 0
+            command -v g >/dev/null 2>&1
+            ;;
+        nvm)
+            [ -s "$HOME/.nvm/nvm.sh" ]
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+tool_version() {
+    case "$1" in
+        pyenv)
+            local root="${PYENV_ROOT:-$HOME/.pyenv}"
+            [ -x "$root/bin/pyenv" ] && "$root/bin/pyenv" --version 2>/dev/null | head -n1
+            ;;
+        g)
+            [ -x "$HOME/.g/bin/g" ] && "$HOME/.g/bin/g" --version 2>/dev/null | head -n1
+            ;;
+        nvm)
+            if [ -s "$HOME/.nvm/nvm.sh" ]; then
+                ( export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm --version 2>/dev/null )
+            fi
+            ;;
+    esac
+}
+
+# ================================================================
+# 依赖 & 磁盘检查
+# ================================================================
+check_dependencies() {
+    local dep
+    for dep in curl git tar; do
+        command -v "$dep" >/dev/null 2>&1 || { log_error "缺少必需依赖: $dep"; exit 1; }
+    done
+    [ -w "$HOME" ] || { log_error "用户目录 '$HOME' 不可写"; exit 1; }
+}
+
+check_disk() {
+    local avail_kb
+    avail_kb=$(df -Pk "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || true)
+    if [ -n "${avail_kb:-}" ] && [ "$avail_kb" -lt 204800 ]; then
+        log_warn "备份目录剩余空间较小（${avail_kb}KB），备份可能失败"
+    fi
+}
+
+# ================================================================
+# 配置文件辅助
+# ================================================================
+add_config() {
+    local file="$1" content="$2"
+    touch "$file"
+    if ! grep -qF -- "$content" "$file"; then
+        printf '%s\n' "$content" >> "$file"
+    fi
+}
+
+add_line_if_missing() {
+    local file="$1" line="$2"
+    touch "$file"
+    if ! grep -Fqx -- "$line" "$file"; then
+        printf '%s\n' "$line" >> "$file"
+        substep "写入 $file: $line"
+    fi
+}
+
+add_block_if_missing() {
+    local file="$1" marker="$2" block="$3"
+    touch "$file"
+    if ! grep -qF -- "$marker" "$file"; then
+        printf '\n%s\n' "$block" >> "$file"
+    fi
+}
+
+# ================================================================
+# 镜像辅助
+# ================================================================
+mirror_raw_url() {
+    local url="$1"
+    case "$url" in
+        https://raw.githubusercontent.com/*)
+            local rest="${url#https://raw.githubusercontent.com/}"
+            local owner="${rest%%/*}"; rest="${rest#*/}"
+            local repo="${rest%%/*}";  rest="${rest#*/}"
+            local ref="${rest%%/*}";   rest="${rest#*/}"
+            printf 'https://fastly.jsdelivr.net/gh/%s/%s@%s/%s' "$owner" "$repo" "$ref" "$rest"
+            ;;
+        *) printf '%s' "$url" ;;
+    esac
+}
+
+download_script() {
+    local url="$1" out="$2"
+    if [ "$USE_CN_MIRROR" = "1" ]; then
+        url="$(mirror_raw_url "$url")"
+    fi
+    substep "下载: $url"
+    local -a curl_opts=( -fL --retry 3 --retry-delay 2 --connect-timeout 15 )
+    if [ -t 2 ]; then
+        # 终端下显示下载进度条（输出到 stderr）
+        curl_opts+=( --progress-bar )
+    else
+        curl_opts+=( -sS )
+    fi
+    curl "${curl_opts[@]}" "$url" -o "$out"
+}
+
+run_with_git_mirror() {
+    if [ "$USE_CN_MIRROR" = "1" ]; then
+        env \
+            GIT_CONFIG_COUNT=1 \
+            "GIT_CONFIG_KEY_0=url.${CN_GITHUB_PROXY}https://github.com/.insteadOf" \
+            "GIT_CONFIG_VALUE_0=https://github.com/" \
+            "$@"
+    else
+        "$@"
+    fi
+}
+
+# 运行命令并显示旋转进度条；输出写入日志，失败时回显日志尾部
+_run_progress() {
+    local desc="$1" logfile="$2"; shift 2
+    local chars=('/' '-' '\' '|') i=0 pid rc=0
+    "$@" >"$logfile" 2>&1 &
+    pid=$!
+    if [ -t 1 ]; then
+        while kill -0 "$pid" 2>/dev/null; do
+            printf '\r  %s[%s]%s %s  ' "$BLUE" "${chars[i++%4]}" "$NC" "$desc"
+            sleep 0.15
+        done
+    fi
+    wait "$pid" || rc=$?
+    if [ -t 1 ]; then
+        if [ "$rc" -eq 0 ]; then
+            printf '\r  %s[✓]%s %-50s\n' "$GREEN" "$NC" "$desc"
+        else
+            printf '\r  %s[✗]%s %-50s\n' "$RED" "$NC" "$desc"
+        fi
+    fi
+    if [ "$rc" -ne 0 ]; then
+        log_warn "命令输出（末尾）:"
+        sed 's/^/      | /' "$logfile" | tail -n 30 >&2
+    fi
+    return "$rc"
+}
+
+# ================================================================
+# 在线安装
+# ================================================================
+install_pyenv_online() {
+    local install_script install_url
+    install_script="$(mktemp)"
+
+    if [ "$USE_CN_MIRROR" = "1" ]; then
+        install_url="https://raw.githubusercontent.com/pyenv/pyenv-installer/master/bin/pyenv-installer"
+    else
+        install_url="https://pyenv.run"
+    fi
+
+    substep "获取 pyenv 安装脚本"
+    if ! download_script "$install_url" "$install_script"; then
+        rm -f "$install_script"
+        log_error "下载 pyenv 安装脚本失败"
+        return 1
+    fi
+
+    local logfile rc=0
+    logfile="$(mktemp)"
+    if [ "$USE_CN_MIRROR" = "1" ]; then
+        _run_progress "执行 pyenv 安装脚本" "$logfile" \
+            env GIT_CONFIG_COUNT=1 \
+            "GIT_CONFIG_KEY_0=url.${CN_GITHUB_PROXY}https://github.com/.insteadOf" \
+            "GIT_CONFIG_VALUE_0=https://github.com/" \
+            bash "$install_script" || rc=$?
+    else
+        _run_progress "执行 pyenv 安装脚本" "$logfile" bash "$install_script" || rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+        rm -f "$install_script" "$logfile"
+        log_error "pyenv 安装脚本执行失败。可尝试 CN_GITHUB_PROXY=https://ghproxy.net/ $PROG_NAME install --cn pyenv"
+        return 1
+    fi
+    rm -f "$install_script" "$logfile"
+
+    local configs=(
+        'export PYENV_ROOT="$HOME/.pyenv"'
+        '[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"'
+        'eval "$(pyenv init - bash)"'
+    )
+    local line
+    for line in "${configs[@]}"; do
+        add_config "$HOME/.bashrc" "$line"
+        add_config "$HOME/.profile" "$line"
+    done
+
+    if [ "$USE_CN_MIRROR" = "1" ]; then
+        add_config "$HOME/.bashrc" "export PYTHON_BUILD_MIRROR_URL=\"$CN_PYTHON_MIRROR\""
+        add_config "$HOME/.bashrc" "export PYTHON_BUILD_MIRROR_URL_SKIP_CHECKSUM=1"
+    fi
+
+    export PYENV_ROOT="$HOME/.pyenv"
+    [ -d "$PYENV_ROOT/bin" ] && export PATH="$PYENV_ROOT/bin:$PATH"
+    eval "$(pyenv init - bash)" 2>/dev/null || true
+}
+
+install_g_online() {
+    local install_script install_url
+    install_script="$(mktemp)"
+
+    install_url="https://raw.githubusercontent.com/voidint/g/master/install.sh"
+    substep "获取 g 安装脚本"
+    if ! download_script "$install_url" "$install_script"; then
+        rm -f "$install_script"
+        log_error "下载 g 安装脚本失败"
+        return 1
+    fi
+
+    if [ "$USE_CN_MIRROR" = "1" ]; then
+        substep "重写脚本 github 地址为镜像"
+        local patched
+        patched="$(mktemp)"
+        sed \
+            -e "s|https://api.github.com|${CN_GITHUB_PROXY}https://api.github.com|g" \
+            -e "s|https://github.com|${CN_GITHUB_PROXY}https://github.com|g" \
+            "$install_script" > "$patched"
+        mv "$patched" "$install_script"
+    fi
+
+    local logfile rc=0
+    logfile="$(mktemp)"
+    _run_progress "执行 g 安装脚本" "$logfile" bash "$install_script" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        rm -f "$install_script" "$logfile"
+        log_error "g 安装失败。可尝试 CN_GITHUB_PROXY=https://ghproxy.net/ $PROG_NAME install --cn g"
+        return 1
+    fi
+    rm -f "$install_script" "$logfile"
+
+    local configs=(
+        'export GOROOT="$HOME/.g/go"'
+        'export PATH="$HOME/.g/bin:$GOROOT/bin:$PATH"'
+    )
+    local line
+    for line in "${configs[@]}"; do
+        add_config "$HOME/.bashrc" "$line"
+        add_config "$HOME/.profile" "$line"
+    done
+
+    if [ "$USE_CN_MIRROR" = "1" ]; then
+        add_config "$HOME/.bashrc" "export G_MIRROR=\"$CN_GO_MIRROR\""
+    fi
+
+    export GOROOT="$HOME/.g/go"
+    export PATH="$HOME/.g/bin:$GOROOT/bin:$PATH"
+    mkdir -p "${GOPATH:-$HOME/go}"/{bin,src,pkg}
+}
+
+install_nvm_online() {
+    local install_script nvm_version install_url
+    install_script="$(mktemp)"
+
+    nvm_version="v0.40.2"
+    install_url="https://raw.githubusercontent.com/nvm-sh/nvm/${nvm_version}/install.sh"
+    substep "获取 nvm 安装脚本"
+    if ! download_script "$install_url" "$install_script"; then
+        rm -f "$install_script"
+        log_error "下载 nvm 安装脚本失败"
+        return 1
+    fi
+
+    local logfile rc=0
+    logfile="$(mktemp)"
+    if [ "$USE_CN_MIRROR" = "1" ]; then
+        _run_progress "执行 nvm 安装脚本" "$logfile" \
+            env GIT_CONFIG_COUNT=1 \
+            "GIT_CONFIG_KEY_0=url.${CN_GITHUB_PROXY}https://github.com/.insteadOf" \
+            "GIT_CONFIG_VALUE_0=https://github.com/" \
+            bash "$install_script" || rc=$?
+    else
+        _run_progress "执行 nvm 安装脚本" "$logfile" bash "$install_script" || rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+        rm -f "$install_script" "$logfile"
+        log_error "nvm 安装失败"
+        return 1
+    fi
+    rm -f "$install_script" "$logfile"
+
+    if [ "$USE_CN_MIRROR" = "1" ]; then
+        add_config "$HOME/.bashrc" "export NVM_NODEJS_ORG_MIRROR=\"$CN_NODE_MIRROR\""
+    fi
+
+    local lines=(
+        'export NVM_DIR="$HOME/.nvm"'
+        '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"'
+        '[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"'
+    )
+    local line
+    for line in "${lines[@]}"; do
+        add_config "$HOME/.bashrc" "$line"
+    done
+
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+}
+
+# ================================================================
+# 备份
+# ================================================================
+backup_g() {
+    local tool_name="g"
+    local out="$BACKUP_DIR/${tool_name}/${tool_name}_backup_$(date +%Y%m%d%H%M%S).tar.gz"
+    local tmp pack_stage
+    local found=0
+    local packed_paths=()
+
+    mkdir -p "$BACKUP_DIR/${tool_name}"
+    tmp="$(mktemp -d)"
+    pack_stage="$(mktemp -d)"
+    trap 'rm -rf -- "$tmp" "$pack_stage"' EXIT
+
+    pack_dir() {
+        local src="$1" dst="$2" strict="${3:-1}"
+        [ -d "$src" ] || return 0
+        local abs
+        abs="$(cd "$src" && pwd)"
+        local p
+        for p in "${packed_paths[@]+"${packed_paths[@]}"}"; do
+            [ "$p" = "$abs" ] && return 0
+        done
+        mkdir -p "$tmp/$dst"
+        local tarfile
+        tarfile="$(mktemp "$pack_stage/pack.XXXXXX.tar")" || {
+            [ "$strict" -eq 1 ] && { log_error "无法创建临时 tar"; return 1; }
+            log_warn "无法创建临时 tar，跳过 $src"; return 0
+        }
+        local crc=0
+        ( cd "$src" && tar \
+            "${TAR_WARN_OPTS[@]+"${TAR_WARN_OPTS[@]}"}" \
+            "${TAR_EXTRA_OPTS[@]+"${TAR_EXTRA_OPTS[@]}"}" \
+            "${EXCLUDES[@]}" -cf "$tarfile" . ) || crc=$?
+        if [ "$crc" -gt 1 ]; then
+            rm -f -- "$tarfile"; rm -rf -- "${tmp:?}/$dst"
+            [ "$strict" -eq 1 ] && { log_error "打包 $src 失败 (rc=$crc)"; return 1; }
+            log_warn "打包 $src 失败，跳过"; return 0
+        fi
+        [ "$crc" -eq 1 ] && log_warn "打包 $src 时有文件变化（已容忍）"
+        local xrc=0
+        ( cd "$tmp/$dst" && tar -xpf "$tarfile" ) || xrc=$?
+        rm -f -- "$tarfile"
+        if [ "$xrc" -ne 0 ]; then
+            rm -rf -- "${tmp:?}/$dst"
+            [ "$strict" -eq 1 ] && { log_error "解压 $src 失败"; return 1; }
+            log_warn "解压 $src 失败，跳过"; return 0
+        fi
+        packed_paths+=("$abs"); found=1; return 0
+    }
+
+    check_disk
+
+    substep "打包 ~/.g"
+    pack_dir "$HOME/.${tool_name}" ".${tool_name}" \
+        || { log_error "打包 ~/.g 失败"; return 1; }
+    substep "打包 ~/.goenv"
+    pack_dir "$HOME/.goenv" ".goenv" \
+        || { log_error "打包 ~/.goenv 失败"; return 1; }
+    substep "打包 ~/.config/g"
+    pack_dir "$HOME/.config/${tool_name}" ".config/${tool_name}" \
+        || { log_error "打包 ~/.config/g 失败"; return 1; }
+
+    local gopath="${GOPATH:-$HOME/go}"
+    if [ -d "$gopath" ]; then
+        local gopath_arc
+        case "$gopath" in
+            "$HOME"/*) gopath_arc="${gopath#"$HOME"/}" ;;
+            "/go")     gopath_arc="_go" ;;
+            *)         gopath_arc="_abs$(printf '%s' "$gopath" | tr '/' '_')" ;;
+        esac
+        substep "打包 GOPATH ($gopath)"
+        pack_dir "$gopath" "$gopath_arc" \
+            || { log_error "打包 GOPATH 失败"; return 1; }
+    fi
+
+    if [ -d "/go" ]; then
+        substep "打包 /go"
+        pack_dir "/go" "_go" 0
+    fi
+
+    if [ "$found" -eq 0 ]; then
+        log_error "未找到 g/go 相关目录"
+        return 1
+    fi
+
+    grep -E "(PATH.*\.${tool_name}/bin|GOROOT|GOPATH|/go/bin)" \
+        "$HOME"/.{bashrc,zshrc,profile} 2>/dev/null \
+        > "$tmp/env_config" || true
+
+    {
+        echo "ARCH=$(uname -m)"
+        echo "OS=$(uname -s)"
+        echo "GOPATH=$gopath"
+    } > "$tmp/platform_info"
+
+    tar -czf "$out" -C "$tmp" .
+    rm -rf -- "$tmp" "$pack_stage"
+    trap - EXIT
+
+    log_ok "已创建: $out"
+}
+
+backup_nvm() {
+    local out="$BACKUP_DIR/nvm/nvm_backup_$(date +%Y%m%d%H%M%S).tar.gz"
+
+    if [ ! -d "$HOME/.nvm" ]; then
+        log_warn "$HOME/.nvm 不存在，跳过 nvm 备份"
+        return 1
+    fi
+
+    mkdir -p "$BACKUP_DIR/nvm"
+    check_disk
+
+    # nvm 专用排除：保留 npm 内的 package.json
+    local nvm_excludes=() ex
+    for ex in "${EXCLUDES[@]}"; do
+        case "$ex" in
+            --exclude=package.json|--exclude=package-lock.json) continue ;;
+            *) nvm_excludes+=("$ex") ;;
+        esac
+    done
+
+    substep "打包 ~/.nvm"
+    local rc=0
+    tar "${TAR_WARN_OPTS[@]+"${TAR_WARN_OPTS[@]}"}" \
+        "${TAR_EXTRA_OPTS[@]+"${TAR_EXTRA_OPTS[@]}"}" \
+        "${nvm_excludes[@]}" \
+        -czf "$out" -C "$HOME" .nvm || rc=$?
+
+    if [ "$rc" -gt 1 ]; then
+        rm -f -- "$out"
+        log_error "打包 ~/.nvm 失败 (rc=$rc)"
+        return 1
+    fi
+    [ "$rc" -eq 1 ] && log_warn "nvm 备份部分文件被跳过（已容忍）"
+    log_ok "已创建: $out"
+}
+
+backup_pyenv() {
+    local pyenv_root="${PYENV_ROOT:-$HOME/.pyenv}"
+    local pyenv_parent pyenv_base out
+
+    out="$BACKUP_DIR/pyenv/pyenv_backup_$(date +%Y%m%d%H%M%S).tar.gz"
+
+    if [ ! -d "$pyenv_root" ]; then
+        log_warn "pyenv 根目录不存在: $pyenv_root，跳过"
+        return 1
+    fi
+
+    mkdir -p "$BACKUP_DIR/pyenv"
+    check_disk
+
+    pyenv_root="$(cd "$pyenv_root" && pwd)"
+    pyenv_parent="$(dirname "$pyenv_root")"
+    pyenv_base="$(basename "$pyenv_root")"
+
+    substep "打包 $pyenv_root"
+    local rc=0
+    tar "${TAR_WARN_OPTS[@]+"${TAR_WARN_OPTS[@]}"}" \
+        "${TAR_EXTRA_OPTS[@]+"${TAR_EXTRA_OPTS[@]}"}" \
+        "${EXCLUDES[@]}" \
+        -czf "$out" -C "$pyenv_parent" "$pyenv_base" || rc=$?
+
+    if [ "$rc" -gt 1 ]; then
+        rm -f -- "$out"
+        log_error "打包 pyenv 失败 (rc=$rc)"
+        return 1
+    fi
+    [ "$rc" -eq 1 ] && log_warn "pyenv 备份部分文件被跳过（已容忍）"
+    log_ok "已创建: $out"
+}
+
+# ================================================================
+# 恢复
+# ================================================================
+check_backup_file() {
+    local file="$1"
+    [ -f "$file" ] || { log_error "备份文件不存在: $file"; return 1; }
+    tar -tzf "$file" >/dev/null 2>&1 || { log_error "非有效 tar.gz: $file"; return 1; }
+}
+
+restore_pyenv() {
+    local backup_file="$1"
+    local pyenv_root="${PYENV_ROOT:-$HOME/.pyenv}"
+
+    check_backup_file "$backup_file" || return 1
+
+    local temp_dir
+    temp_dir="$(mktemp -d)"
+    trap 'rm -rf -- "$temp_dir"; trap - RETURN' RETURN
+
+    substep "解压 pyenv 备份"
+    tar -xzf "$backup_file" -C "$temp_dir"
+
+    local source_dir="$temp_dir"
+    if [ -d "$temp_dir/.pyenv" ]; then
+        source_dir="$temp_dir/.pyenv"
+    else
+        local entries=() e
+        shopt -s dotglob nullglob
+        for e in "$temp_dir"/*; do entries+=("$e"); done
+        shopt -u dotglob nullglob
+        if [ ${#entries[@]} -eq 1 ] && [ -d "${entries[0]}" ]; then
+            source_dir="${entries[0]}"
+        fi
+    fi
+
+    substep "复制到 $pyenv_root"
+    mkdir -p "$pyenv_root"
+    cp -a "$source_dir"/. "$pyenv_root"/
+
+    local cfg_root
+    if [ "$pyenv_root" = "$HOME/.pyenv" ]; then
+        cfg_root='$HOME/.pyenv'
+    else
+        cfg_root="$pyenv_root"
+    fi
+
+    local rc_files=("$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile") f
+    for f in "${rc_files[@]}"; do
+        add_line_if_missing "$f" "export PYENV_ROOT=\"$cfg_root\""
+        add_line_if_missing "$f" '[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"'
+        add_line_if_missing "$f" 'eval "$(pyenv init - bash)"'
+    done
+}
+
+restore_g() {
+    local backup_file="$1"
+    check_backup_file "$backup_file" || return 1
+
+    local restore_dir
+    restore_dir="$(mktemp -d)"
+    trap 'rm -rf -- "$restore_dir"; trap - RETURN' RETURN
+
+    substep "解压 g 备份"
+    tar -xzf "$backup_file" -C "$restore_dir"
+
+    local platform_file="" cand
+    for cand in "$restore_dir/platform_info" "$restore_dir/.platform_info"; do
+        [ -f "$cand" ] && { platform_file="$cand"; break; }
+    done
+    if [ -n "$platform_file" ]; then
+        substep "备份平台信息:"
+        sed 's/^/         /' "$platform_file"
+        substep "当前平台: ARCH=$(uname -m) OS=$(uname -s)"
+    fi
+
+    local entries=() e
+    shopt -s dotglob nullglob
+    for e in "$restore_dir"/*; do entries+=("$e"); done
+    shopt -u dotglob nullglob
+
+    local dir base_dir target_dir
+    for dir in "${entries[@]+"${entries[@]}"}"; do
+        base_dir="$(basename "$dir")"
+        case "$base_dir" in
+            platform_info|.platform_info|env_config) continue ;;
+        esac
+        [ -d "$dir" ] || continue
+
+        case "$base_dir" in
+            _go)
+                if [ -w / ] || { [ -d /go ] && [ -w /go ]; }; then
+                    target_dir="/go"
+                else
+                    target_dir="$HOME/_go"
+                    log_warn "无权限写入 /go，恢复为 $target_dir"
+                fi
+                ;;
+            _abs*)
+                target_dir="$HOME/$base_dir"
+                log_warn "外部绝对路径 (编码有损)，恢复为 $target_dir"
+                ;;
+            *)
+                target_dir="$HOME/$base_dir"
+                ;;
+        esac
+
+        substep "恢复 $base_dir → $target_dir"
+        rm -rf -- "$target_dir"
+        cp -rp -- "$dir" "$target_dir"
+    done
+
+    local f
+    for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+        [ -f "$f" ] || continue
+        sed -i '/GOROOT="\$HOME\/\.g\/versions\/current\/go"/d' "$f" 2>/dev/null || true
+    done
+
+    local env_config
+    env_config=$(cat <<'EOF'
+# g (Go Version Manager) configuration
+if [[ -n $(alias g 2>/dev/null) ]]; then
+    unalias g
+fi
+[ -s "${HOME}/.g/env" ] && \. "${HOME}/.g/env"  # g shell setup
+EOF
+)
+    for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+        add_block_if_missing "$f" 'GOROOT="$HOME/.g/go"' "$env_config"
+    done
+}
+
+restore_nvm() {
+    local backup_file="$1"
+    check_backup_file "$backup_file" || return 1
+
+    local temp_dir
+    temp_dir="$(mktemp -d)"
+    trap 'rm -rf -- "$temp_dir"; trap - RETURN' RETURN
+
+    substep "解压 nvm 备份"
+    tar -xzf "$backup_file" -C "$temp_dir"
+
+    [ -d "$temp_dir/.nvm" ] || { log_error "备份中未找到 .nvm"; return 1; }
+
+    substep "恢复 ~/.nvm"
+    rm -rf "$HOME/.nvm"
+    mv "$temp_dir/.nvm" "$HOME/.nvm"
+
+    local nvm_init
+    nvm_init=$(cat <<'EOF'
+export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm
+EOF
+)
+    local f
+    for f in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.profile"; do
+        add_block_if_missing "$f" 'NVM_DIR' "$nvm_init"
+    done
+}
+
+restore_one_tool() {
+    local tool="$1" file="$2"
+    case "$tool" in
+        pyenv) restore_pyenv "$file" ;;
+        g)     restore_g     "$file" ;;
+        nvm)   restore_nvm   "$file" ;;
+        *)     log_error "未知工具: $tool"; return 1 ;;
+    esac
+}
+
+# ================================================================
+# 备份查找
+# ================================================================
+_find_backup_files() {
+    local tool="$1"
+    local -a dirs=(
+        "$BACKUP_DIR/$tool"
+        "$BACKUP_DIR"
+        "$LEGACY_BACKUP_DIR/$tool"
+        "$LEGACY_BACKUP_DIR"
+    )
+    local d
+    shopt -s nullglob
+    for d in "${dirs[@]}"; do
+        [ -d "$d" ] || continue
+        local files=("$d/${tool}_backup_"*.tar.gz)
+        if [ ${#files[@]} -gt 0 ]; then
+            printf '%s\n' "${files[@]}" | LC_ALL=C sort
+            shopt -u nullglob
+            return 0
+        fi
+    done
+    shopt -u nullglob
+    return 0
+}
+
+find_latest_backup() {
+    local tool="$1"
+    local files
+    files="$(_find_backup_files "$tool")"
+    [ -z "$files" ] && return 0
+    printf '%s\n' "$files" | tail -n1
+}
+
+count_backups() {
+    local tool="$1"
+    local files
+    files="$(_find_backup_files "$tool")"
+    if [ -z "$files" ]; then
+        echo 0
+    else
+        printf '%s\n' "$files" | wc -l | tr -d ' '
+    fi
+}
+
+# ================================================================
+# install 前的本地备份恢复尝试
+# ================================================================
+try_restore_tool() {
+    local tool="$1"
+    local backup
+    backup="$(find_latest_backup "$tool")"
+    if [ -z "$backup" ]; then
+        return 1
+    fi
+    substep "发现本地备份: $(basename "$backup")"
+    if restore_one_tool "$tool" "$backup"; then
+        return 0
+    fi
+    log_warn "$tool 从备份恢复失败，将回退到在线安装"
+    return 1
+}
+
+# ================================================================
+# 环境刷新
+# ================================================================
+reload_shell_env() {
+    substep "刷新 shell 环境"
+    set +u; set +e
+    # shellcheck disable=SC1090
+    source "$HOME/.bashrc" >/dev/null 2>&1
+    set -e; set -u
+
+    if ! command -v pyenv >/dev/null 2>&1 && [ -d "$HOME/.pyenv/bin" ]; then
+        export PYENV_ROOT="$HOME/.pyenv"
+        export PATH="$PYENV_ROOT/bin:$PATH"
+        eval "$(pyenv init - bash)" 2>/dev/null || true
+    fi
+    if ! command -v g >/dev/null 2>&1 && [ -x "$HOME/.g/bin/g" ]; then
+        export GOROOT="$HOME/.g/go"
+        export PATH="$HOME/.g/bin:$GOROOT/bin:$PATH"
+    fi
+    if ! command -v nvm >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then
+        export NVM_DIR="$HOME/.nvm"
+        # shellcheck disable=SC1091
+        \. "$NVM_DIR/nvm.sh"
+        [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+    fi
+    return 0
+}
+
+verify_one_tool() {
+    local tool="$1"
+    case "$tool" in
+        pyenv)
+            if is_tool_installed pyenv || command -v pyenv >/dev/null 2>&1; then
+                log_ok "pyenv 验证通过"
+                return 0
+            fi ;;
+        g)
+            if is_tool_installed g || command -v g >/dev/null 2>&1; then
+                log_ok "g 验证通过"
+                return 0
+            fi ;;
+        nvm)
+            if is_tool_installed nvm || command -v nvm >/dev/null 2>&1; then
+                log_ok "nvm 验证通过"
+                return 0
+            fi ;;
+    esac
+    log_error "$tool 验证失败"
+    return 1
+}
+
+print_final_hint() {
+    echo
+    echo "${DIM}提示: 脚本内的环境刷新仅作用于当前进程，请在你的终端执行:${NC}"
+    echo "    source ~/.bashrc  ${DIM}# 或者 exec bash / 重开终端${NC}"
+}
+
+# ================================================================
+# 清理已安装（用于 --force）
+# ================================================================
+clean_tool() {
+    local tool="$1"
+    case "$tool" in
+        g)
+            rm -rf "$HOME/.g" 2>/dev/null || true
+            sed -i '/g shell setup/d; /\.g\//d; /GOROOT="\$HOME\/\.g\/go"/d' "$HOME/.bashrc"  2>/dev/null || true
+            sed -i '/g shell setup/d; /\.g\//d; /GOROOT="\$HOME\/\.g\/go"/d' "$HOME/.profile" 2>/dev/null || true
+            ;;
+        nvm)
+            rm -rf "$HOME/.nvm" 2>/dev/null || true
+            sed -i '/NVM_DIR/d' "$HOME/.bashrc" 2>/dev/null || true
+            ;;
+        pyenv)
+            # 不主动删除 pyenv，避免误删用户的 Python 版本
+            ;;
+    esac
+}
+
+# ================================================================
+# 子命令: install
+# ================================================================
+cmd_install() {
+    local use_cn="${USE_CN_MIRROR:-0}"
+    local force=0 no_restore=0
+    local -a tools=()
+    local arg t
+
+    for arg in "$@"; do
+        case "$arg" in
+            --cn|-c)       use_cn=1 ;;
+            --force|-f)    force=1 ;;
+            --no-restore)  no_restore=1 ;;
+            -h|--help)     show_help; exit 0 ;;
+            all)           for t in pyenv g nvm; do
+                               [[ " ${tools[*]:-} " == *" $t "* ]] || tools+=("$t")
+                           done ;;
+            pyenv|g|nvm)
+                [[ " ${tools[*]:-} " == *" $arg "* ]] || tools+=("$arg")
+                ;;
+            *)
+                log_error "未知参数: $arg"; return 1 ;;
+        esac
+    done
+    [ ${#tools[@]} -eq 0 ] && tools=(pyenv g nvm)
+    USE_CN_MIRROR="$use_cn"
+
+    printf '\n%s=== devmgr install ===%s\n' "$BOLD" "$NC"
+    log_info "目标工具: ${tools[*]}"
+    [ "$USE_CN_MIRROR" = "1" ] && log_info "启用国内镜像源"
+    [ "$force" = "1" ]         && log_warn "启用 --force，将重新安装已存在的工具"
+
+    check_dependencies
+
+    # ---- 前置：检查已安装 ----
+    local -a to_process=() skipped=()
+    for t in "${tools[@]}"; do
+        if is_tool_installed "$t" && [ "$force" -ne 1 ]; then
+            skipped+=("$t")
+        else
+            to_process+=("$t")
+        fi
+    done
+
+    if [ ${#skipped[@]} -gt 0 ]; then
+        log_warn "以下工具已安装，跳过: ${skipped[*]}"
+        log_warn "如需强制重装，请加 --force"
+    fi
+    if [ ${#to_process[@]} -eq 0 ]; then
+        log_ok "无需处理（全部工具均已安装）"
+        return 0
+    fi
+
+    # ---- 逐个处理 ----
+    local total=${#to_process[@]} i=0 rc
+    local -a failed=()
+    for t in "${to_process[@]}"; do
+        i=$((i+1))
+        printf '\n%s==> [%d/%d] %s%s\n' "$BOLD" "$i" "$total" "$t" "$NC"
+
+        # --force 时清理
+        if [ "$force" -eq 1 ] && is_tool_installed "$t"; then
+            substep "清理已有的 $t"
+            clean_tool "$t"
+        fi
+
+        rc=0
+        local restored=0
+
+        # 1) 尝试从备份恢复
+        if [ "$no_restore" -ne 1 ]; then
+            if try_restore_tool "$t"; then
+                restored=1
+            fi
+        else
+            substep "已禁用本地恢复 (--no-restore)"
+        fi
+
+        # 2) 在线安装
+        if [ "$restored" -eq 0 ]; then
+            substep "在线安装 $t"
+            case "$t" in
+                pyenv) install_pyenv_online || rc=$? ;;
+                g)     install_g_online     || rc=$? ;;
+                nvm)   install_nvm_online   || rc=$? ;;
+            esac
+        fi
+
+        if [ "$rc" -ne 0 ]; then
+            failed+=("$t")
+            continue
+        fi
+        verify_one_tool "$t" || failed+=("$t")
+    done
+
+    reload_shell_env
+
+    printf '\n'
+    if [ ${#failed[@]} -gt 0 ]; then
+        log_error "以下工具处理失败: ${failed[*]}"
+        return 1
+    fi
+    log_ok "=== 全部完成 ==="
+    print_final_hint
+}
+
+# ================================================================
+# 子命令: backup
+# ================================================================
+cmd_backup() {
+    local -a tools=()
+    local arg t
+    for arg in "$@"; do
+        case "$arg" in
+            -h|--help) show_help; exit 0 ;;
+            all) for t in g nvm pyenv; do
+                     [[ " ${tools[*]:-} " == *" $t "* ]] || tools+=("$t")
+                 done ;;
+            g|nvm|pyenv)
+                [[ " ${tools[*]:-} " == *" $arg "* ]] || tools+=("$arg") ;;
+            *) log_error "未知参数: $arg"; return 1 ;;
+        esac
+    done
+    [ ${#tools[@]} -eq 0 ] && tools=(g nvm pyenv)
+
+    printf '\n%s=== devmgr backup ===%s\n' "$BOLD" "$NC"
+    log_info "备份目录: $BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR"
+
+    local total=${#tools[@]} i=0 rc
+    local -a failed=() succeeded=()
+    for t in "${tools[@]}"; do
+        i=$((i+1))
+        printf '\n%s==> [%d/%d] 备份 %s%s\n' "$BOLD" "$i" "$total" "$t" "$NC"
+        rc=0
+        case "$t" in
+            g)     ( backup_g )     || rc=$? ;;
+            nvm)   ( backup_nvm )   || rc=$? ;;
+            pyenv) ( backup_pyenv ) || rc=$? ;;
+        esac
+        if [ "$rc" -ne 0 ]; then
+            failed+=("$t")
+        else
+            succeeded+=("$t")
+        fi
+    done
+
+    printf '\n'
+    [ ${#succeeded[@]} -gt 0 ] && log_ok "已备份: ${succeeded[*]}"
+    if [ ${#failed[@]} -gt 0 ]; then
+        log_error "备份失败: ${failed[*]}"
+        return 1
+    fi
+}
+
+# ================================================================
+# 子命令: restore
+# ================================================================
+cmd_restore() {
+    local force=0
+    local -a tools=()
+    local arg t
+    for arg in "$@"; do
+        case "$arg" in
+            --force|-f) force=1 ;;
+            -h|--help) show_help; exit 0 ;;
+            all) for t in g nvm pyenv; do
+                     [[ " ${tools[*]:-} " == *" $t "* ]] || tools+=("$t")
+                 done ;;
+            g|nvm|pyenv)
+                [[ " ${tools[*]:-} " == *" $arg "* ]] || tools+=("$arg") ;;
+            *) log_error "未知参数: $arg"; return 1 ;;
+        esac
+    done
+    [ ${#tools[@]} -eq 0 ] && tools=(g nvm pyenv)
+
+    printf '\n%s=== devmgr restore ===%s\n' "$BOLD" "$NC"
+
+    # ---- 前置检查已安装 ----
+    local -a to_restore=() already=()
+    for t in "${tools[@]}"; do
+        if is_tool_installed "$t" && [ "$force" -ne 1 ]; then
+            already+=("$t")
+        else
+            to_restore+=("$t")
+        fi
+    done
+    if [ ${#already[@]} -gt 0 ]; then
+        log_warn "以下工具已安装，跳过: ${already[*]}"
+        log_warn "如需覆盖恢复，请加 --force"
+    fi
+    if [ ${#to_restore[@]} -eq 0 ]; then
+        log_ok "无需处理"
+        return 0
+    fi
+
+    local total=${#to_restore[@]} i=0
+    local -a failed=() restored=()
+    for t in "${to_restore[@]}"; do
+        i=$((i+1))
+        printf '\n%s==> [%d/%d] 恢复 %s%s\n' "$BOLD" "$i" "$total" "$t" "$NC"
+
+        local backup
+        backup="$(find_latest_backup "$t")"
+        if [ -z "$backup" ]; then
+            log_warn "未找到 $t 的备份，跳过"
+            continue
+        fi
+        substep "使用备份: $(basename "$backup")"
+
+        if restore_one_tool "$t" "$backup"; then
+            restored+=("$t")
+        else
+            failed+=("$t")
+        fi
+    done
+
+    reload_shell_env
+    printf '\n'
+    [ ${#restored[@]} -gt 0 ] && log_ok "已恢复: ${restored[*]}"
+    [ ${#failed[@]}   -gt 0 ] && { log_error "恢复失败: ${failed[*]}"; return 1; }
+    print_final_hint
+    return 0
+}
+
+# ================================================================
+# 子命令: status
+# ================================================================
+cmd_status() {
+    printf '\n%s=== devmgr status ===%s\n\n' "$BOLD" "$NC"
+    printf '%-8s %-14s %-30s %s\n' "TOOL" "STATUS" "LOCATION" "VERSION"
+    printf '%s\n' "------------------------------------------------------------------"
+
+    local t dir status ver bcnt
+    for t in pyenv g nvm; do
+        dir="$(tool_install_dir "$t")"
+        bcnt="$(count_backups "$t")"
+        if is_tool_installed "$t"; then
+            status="${GREEN}installed${NC}"
+            ver="$(tool_version "$t" 2>/dev/null || echo '?')"
+        else
+            status="${YELLOW}missing${NC}"
+            ver="-"
+        fi
+        printf '%-8s %-22b %-30s %s\n' "$t" "$status" "$dir" "$ver"
+        printf '         %sbackups: %s%s\n' "$DIM" "$bcnt" "$NC"
+    done
+
+    printf '\n备份目录: %s\n' "$BACKUP_DIR"
+    [ -d "$LEGACY_BACKUP_DIR" ] && printf '旧备份目录: %s\n' "$LEGACY_BACKUP_DIR"
+    return 0
+}
+
+# ================================================================
+# 子命令: list
+# ================================================================
+cmd_list() {
+    local -a tools=()
+    local arg t
+    for arg in "$@"; do
+        case "$arg" in
+            -h|--help) show_help; exit 0 ;;
+            all) for t in g nvm pyenv; do
+                     [[ " ${tools[*]:-} " == *" $t "* ]] || tools+=("$t")
+                 done ;;
+            g|nvm|pyenv)
+                [[ " ${tools[*]:-} " == *" $arg "* ]] || tools+=("$arg") ;;
+            *) log_error "未知参数: $arg"; return 1 ;;
+        esac
+    done
+    [ ${#tools[@]} -eq 0 ] && tools=(pyenv g nvm)
+
+    printf '\n%s=== devmgr list ===%s\n' "$BOLD" "$NC"
+    for t in "${tools[@]}"; do
+        printf '\n%s[%s]%s\n' "$BOLD" "$t" "$NC"
+        local files
+        files="$(_find_backup_files "$t")"
+        if [ -z "$files" ]; then
+            printf '  %s(无备份)%s\n' "$DIM" "$NC"
+            continue
+        fi
+        local f sz
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            sz="$(du -h "$f" 2>/dev/null | cut -f1)"
+            printf '  %s  %s(%s)%s\n' "$(basename "$f")" "$DIM" "$sz" "$NC"
+        done <<<"$files"
+    done
+}
+
+# ================================================================
+# 子命令: self-install
+# ================================================================
+cmd_self_install() {
+    local target_dir="${DEVMGR_BIN_DIR:-$HOME/.local/bin}"
+    local target="$target_dir/$PROG_NAME"
+    local self="$SELF_PATH"
+
+    printf '\n%s=== devmgr self-install ===%s\n' "$BOLD" "$NC"
+    log_info "源文件: $self"
+    log_info "目标:   $target"
+
+    [ -f "$self" ] || { log_error "找不到脚本源文件"; return 1; }
+
+    # 检测是否已安装（内容一致则跳过）
+    if [ -e "$target" ] && cmp -s "$self" "$target"; then
+        log_ok "已安装且内容一致，无需更新"
+    else
+        if [ -e "$target" ]; then
+            log_warn "检测到旧版本，覆盖安装"
+        fi
+        mkdir -p "$target_dir" || { log_error "创建目录失败: $target_dir"; return 1; }
+        cp -f "$self" "$target" || { log_error "复制失败: $target"; return 1; }
+        chmod +x "$target" || { log_error "设置执行权限失败"; return 1; }
+        log_ok "已安装: $target"
+    fi
+
+    case ":$PATH:" in
+        *":$target_dir:"*) log_ok "$target_dir 已在 PATH 中" ;;
+        *) log_warn "$target_dir 不在 PATH 中，请添加:"; echo "  export PATH=\"$target_dir:\$PATH\"" ;;
+    esac
+
+    substep "验证: $PROG_NAME --version"
+    "$target" --version 2>/dev/null || true
+    log_ok "完成。现在可以直接使用: $PROG_NAME status"
+}
+
+# ================================================================
+# 帮助
+# ================================================================
+show_help() {
+    cat <<EOF
+${BOLD}devmgr${NC} v${VERSION} - 一体化开发工具管理器
+${DIM}(pyenv / g / nvm)${NC}
+
+用法: ${BOLD}$PROG_NAME${NC} <command> [options] [tools...]
+
+命令:
+  ${BOLD}install${NC}   安装工具（前置检查已安装；优先本地备份恢复，否则在线安装）
+  ${BOLD}restore${NC}   从备份恢复工具（已安装时跳过，除非 --force）
+  ${BOLD}backup${NC}    备份已安装的工具
+  ${BOLD}status${NC}    查看各工具安装状态、版本、备份数量
+  ${BOLD}list${NC}      列出可用的备份文件
+  ${BOLD}self-install${NC} 安装到 ~/.local/bin（别名: deploy）
+  ${BOLD}help${NC}      显示此帮助
+
+工具: ${BOLD}pyenv${NC} | ${BOLD}g${NC} | ${BOLD}nvm${NC} | ${BOLD}all${NC}（默认 all）
+
+install 选项:
+  --cn, -c        使用国内镜像源
+  --force, -f     强制重装（先清理已安装目录）
+  --no-restore    跳过本地备份恢复，直接在线安装
+
+restore 选项:
+  --force, -f     覆盖已安装的工具
+
+示例:
+  $PROG_NAME status
+  $PROG_NAME install
+  $PROG_NAME install --cn g nvm
+  $PROG_NAME install --force pyenv
+  $PROG_NAME backup all
+  $PROG_NAME restore g
+  $PROG_NAME restore --force nvm
+  $PROG_NAME list
+
+环境变量:
+  DEVMGR_BACKUP_DIR   备份目录 (默认: ~/.local/share/devmgr/backups)
+  PYENV_ROOT          pyenv 安装目录 (默认: \$HOME/.pyenv)
+  GOPATH              Go 工作目录 (默认: \$HOME/go)
+  USE_CN_MIRROR=1     启用国内镜像
+  CN_GITHUB_PROXY     github 代理前缀 (默认: $CN_GITHUB_PROXY)
+  CN_NODE_MIRROR      node 镜像 (默认: $CN_NODE_MIRROR)
+  CN_GO_MIRROR        go 镜像 (默认: $CN_GO_MIRROR)
+  CN_PYTHON_MIRROR    python 源码镜像 (默认: $CN_PYTHON_MIRROR)
+
+安装到系统:
+  $PROG_NAME self-install              ${DIM}# 自动安装到 ~/.local/bin${NC}
+  ${DIM}# 或手动复制并加执行权限${NC}
+  cp $PROG_NAME ~/.local/bin/$PROG_NAME && chmod +x ~/.local/bin/$PROG_NAME
+  ${DIM}# 或创建软链接（请替换为实际路径）${NC}
+  ln -sf "/path/to/devmgr" ~/.local/bin/$PROG_NAME
+EOF
+}
+
+# ================================================================
+# 主入口
+# ================================================================
+main() {
+    local cmd="${1:-}"
+    [ "$#" -gt 0 ] && shift
+
+    case "$cmd" in
+        install|i)         cmd_install  "$@" ;;
+        backup|b)          cmd_backup   "$@" ;;
+        restore|r|recover) cmd_restore  "$@" ;;
+        status|st|s)       cmd_status   "$@" ;;
+        list|ls|l)         cmd_list     "$@" ;;
+        self-install|deploy) cmd_self_install "$@" ;;
+        help|-h|--help)    show_help ;;
+        version|-v|--version) printf '%s %s\n' "$PROG_NAME" "$VERSION" ;;
+        "")
+            show_help
+            return 1
+            ;;
+        *)
+            log_error "未知命令: $cmd"
+            show_help
+            return 1
+            ;;
+    esac
+}
+
+main "$@"
