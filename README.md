@@ -12,28 +12,21 @@
 
 * start
 ```bash
-git clone https://github.com/HanamiSakiP/AI.git && cd AI/dev
-chmod +x *.sh && ./install.sh
-exec bash
-cd ..
-docsify serve .
+mkdir -p ~/.local/share/devmgr/backups
+cd ~/.local/share/devmgr
+git clone https://github.com/HanamiSakiP/AI.git
 ```
 ```bash
-# 脚本包装成命令
+cp -r ~/.local/share/devmgr/AI/dev/backups ~/.local/share/devmgr/
 mkdir -p ~/.local/bin
-# 命令名为dev
-install -m755 dev ~/.local/bin/
-# 写入环境
+install -m755 ~/.local/share/devmgr/AI/dev/dev ~/.local/bin
+install -m755 ~/.local/share/devmgr/AI/dev/undev ~/.local/bin
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
-# 执行命令
-mytool
-# 每天02点执行rclone同步
-0 2 * * * flock -n /tmp/rclone.lock ~/go/bin/rclone sync /本地/路径 remote:云端路径 --log-file /home/你的用户名/rclone-sync.log --log-level INFO
-# 安装tui工具
-gh release download --repo denisidoro/navi --pattern "*x86_64-unknown-linux-musl*"
-gh release download --repo sxyazi/yazi --pattern "*x86_64-unknown-linux-musl*"
-gh release download --repo zellij-org/zellij --pattern "*x86_64-unknown-linux-musl*"
+ls ~/.local/bin
+dev restore # install
+source ~/.bashrc
+ls ~/.local/share/devmgr/backups
 ```
 
 <details>
@@ -42,25 +35,27 @@ gh release download --repo zellij-org/zellij --pattern "*x86_64-unknown-linux-mu
 docker
 ```bash
 # 最新版debian
-docker pull debian
+docker pull debian # podman同理
 # 精简版debian
-docker pull debian:trixie-slim
-# 创建并进入构建好的容器
-docker run -it --name test-debian debian:latest /bin/bash
-# 使用Dockerfile构建
-# docker build -t my-debian .
-# docker images
-# docker run -it --rm my-debian
-# 重新进入构建好的容器
-docker start -ai test-debian
+docker pull debian:trixie-slim # podman同理
+```
+docker
+```bash
+docker run -d --name test-debian debian:latest sleep infinity
+docker exec -it test-debian mkdir -p /root/.local/share/devmgr/AI
+docker cp ~/.local/share/devmgr/backups/AI test-debian:/root/.local/share/devmgr/AI
+docker exec -it test-debian /bin/bash
 # 强制删除容器
-# docker rm -f debian-test
-# 按标签删除镜像
-# docker rmi debian:latest
-# 或者按 ID 删除镜像
-# docker rmi 99339bdd341a
-# 复制文件出当前目录
-docker cp my-debian:/AI ./
+# docker rm -f test-debian
+```
+podman
+```bash
+podman run -d --name test-debian debian:latest sleep infinity
+podman exec -it test-debian mkdir -p /root/.local/share/devmgr/devmgr/AI
+podman cp ~/.local/share/devmgr/backups/AI test-debian:/root/.local/share/devmgr/AI
+podman exec -it test-debian /bin/bash
+# 强制删除容器
+# podman rm -f test-debian
 ```
 apt
 ```bash
@@ -86,6 +81,15 @@ pkg-config
 <details>
 <summary>tools</summary>
 
+```bash
+docsify serve .
+# 每天02点执行rclone同步
+0 2 * * * flock -n /tmp/rclone.lock ~/go/bin/rclone sync /本地/路径 remote:云端路径 --log-file /home/你的用户名/rclone-sync.log --log-level INFO
+# 安装tui工具
+gh release download --repo denisidoro/navi --pattern "*x86_64-unknown-linux-musl*"
+gh release download --repo sxyazi/yazi --pattern "*x86_64-unknown-linux-musl*"
+gh release download --repo zellij-org/zellij --pattern "*x86_64-unknown-linux-musl*"
+```
 cli
 ```bash
 npm i -g nrm
