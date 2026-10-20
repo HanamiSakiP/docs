@@ -235,6 +235,34 @@ tar -zxvf amd.tar.gz
 # 使用自定义的 bash 脚本
 ./restore_g.sh g_backup_*.tar.gz
 ```
+
+```bash
+# 本地仓库同步到远程仓库
+# 查看当前已配置远程仓库
+git remote -v
+# 删除当前远程仓库如果有
+git remote remove origin
+# 查看当前本地分支
+git branch
+# 添加远程仓库
+git remote add git@github.com:HanamiSakiP/docs.git
+# 切换到本地master分支
+git switch master
+# 本地分支强制重置成远程分支
+git reset --hard origin/master
+```
+```bash
+# 首次git
+git init
+# origin为远程仓库名
+git remote add origin git@github.com:HanamiSakiP/docs.git
+git add .
+git commit -m "frist"
+# 首次需要添加 -u origin master
+git push -u origin master
+git push # 后续使用
+```
+
 android 使用 termux
 * [android-termux](https://github.com/termux/termux-app/releases/)
 
