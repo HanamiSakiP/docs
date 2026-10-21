@@ -92,13 +92,15 @@ gh release download --repo zellij-org/zellij --pattern "*x86_64-unknown-linux-mu
 ```
 cli
 ```bash
-npm i -g nrm
+npm i -g nrm bun pnpm
 npm i docsify-cli -g
 npm install -g @earendil-works/pi-coding-agent
+npm install -g @anthropic-ai/claude-code
+npm install -g @deepseek-ai/dsh
+dsh plugin --profile web add dsh-pet
 npm install --global rea-agents
 npm install -g @opencode/cli
 npm install -g @openai/codex
-npm install -g @anthropic-ai/claude-code
 # go
 go install github.com/restic/restic/cmd/restic@latest
 go install github.com/rclone/rclone@latest

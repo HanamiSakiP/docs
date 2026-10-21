@@ -14,6 +14,24 @@
 > rclone lsd dropbox:
 > # 初始化,备份,恢复
 > ```
+```bash
+git init
+git add .
+git commit -m "first commit"
+git branch -vv
+git branch -M main
+git remote add origin git@github.com:HanamiSakiP/AI.git
+git push -u origin main
+```
+```bash
+# gh repo clone HanamiSakiP/AI
+# git clone https://github.com/HanamiSakiP/AI.git
+git branch -vv
+git branch -M main
+git add .
+git commit -m "2"
+git push
+```
 ## rclone
 > ### 1. 初始化交互
 > ```bash
