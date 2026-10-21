@@ -9,29 +9,97 @@
 > rclone config
 > # n , 名字 , 服务
 > # 回车,回车,n,y,浏览器登陆,y
+> # 列出所有远程的名称
 > rclone listremotes
 > # 测试连通性
 > rclone lsd dropbox:
 > # 初始化,备份,恢复
 > ```
+
+## git省流使用
+
+<details>
+<summary>情况0,未配置gh</summary>
+
 ```bash
-git init
+# 使用 token 文件登陆（需要提前创建）
+gh auth login --with-token < mytoken.txt
+# 查看 gh 当前用的协议
+gh auth status
+```
+```bash
+# 浏览器登陆
+gh auth login --web
+# 查看 GitHub 上已上传公钥
+gh ssh-key list
+```
+</details>
+
+<details>
+<summary>情况1,未创建本地/远程git仓库</summary>
+
+```bash
+# 1. 创建 git 本地仓库
+git init # 初始化当前目录
+```
+```bash
+# 1.1. 使用 gh 创建新远程仓库-github
+# 创建名为 my-project 的私有仓库，并立即克隆到本地
+gh repo create my-project --private --clone
+```
+```bash
+# 1.1.1. 基于模板，创建新远程仓库
+# 基于 owner/template-repo 模板，
+# 创建名为 my-project 的公开仓库，并立即克隆到本地
+gh repo create my-new-repo --template owner/template-repo --public --clone
+```
+
+</details>
+
+```bash
+# 2. 提交更改
+# 查看当前 分支
+git branch -vv
+# 查看当前远程仓库
+git remote -v
+# 切换到 main 分支
+# git branch -M main
+# 添加暂存
 git add .
 git commit -m "first commit"
-git branch -vv
-git branch -M main
-git remote add origin git@github.com:HanamiSakiP/AI.git
-git push -u origin main
-```
-```bash
-# gh repo clone HanamiSakiP/AI
-# git clone https://github.com/HanamiSakiP/AI.git
-git branch -vv
-git branch -M main
-git add .
-git commit -m "2"
 git push
 ```
+<details>
+<summary>情况2,已创建本地git仓库</summary>
+
+```bash
+# 3. 将git本地推送到远程
+# 在本地项目根目录下执行
+# 3.1 使用 git 添加远程仓库 -> 提交更改 <-
+git remote add origin git@github.com:HanamiSakiP/docs.git
+```
+```bash
+# 3.2 直接使用 gh 推送
+gh repo create docs --public --source=. --push
+```
+
+</details>
+
+<details>
+<summary>情况3,已创建远程git仓库</summary>
+
+```bash
+# 4. 下载远程仓库到本地
+# 使用git
+git clone https://github.com/HanamiSakiP/AI.git
+```
+```bash
+# 使用gh
+gh repo clone HanamiSakiP/AI
+```
+
+</details>
+
 ## rclone
 > ### 1. 初始化交互
 > ```bash

@@ -94,6 +94,7 @@ cli
 ```bash
 npm i -g nrm bun pnpm
 npm i docsify-cli -g
+npm install -g @bitwarden/cli
 npm install -g @earendil-works/pi-coding-agent
 npm install -g @anthropic-ai/claude-code
 npm install -g @deepseek-ai/dsh
