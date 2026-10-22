@@ -21,12 +21,14 @@ cp -r ~/.local/share/devmgr/AI/dev/backups ~/.local/share/devmgr/
 mkdir -p ~/.local/bin
 install -m755 ~/.local/share/devmgr/AI/dev/dev ~/.local/bin
 install -m755 ~/.local/share/devmgr/AI/dev/dev-tool ~/.local/bin
+install -m755 ~/.local/share/devmgr/AI/dev/tool ~/.local/bin
 install -m755 ~/.local/share/devmgr/AI/dev/undev ~/.local/bin
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ls ~/.local/bin
 dev restore # install
 dev-tool
+tool
 source ~/.bashrc
 ls ~/.local/share/devmgr/backups
 ```
