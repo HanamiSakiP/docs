@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+# tools - 批量安装与配置开发工具链（进度显示 + 分段执行 + 已安装跳过）
+# 放置于 ~/.local/bin/ 并赋予可执行权限即可作为命令使用
+
+set -eo pipefail
+
+# ---------- 颜色（仅终端启用） ----------
+if [ -t 1 ]; then
+    C_HEAD=$'\033[1;36m'; C_OK=$'\033[32m'; C_ERR=$'\033[31m'
+    C_SKIP=$'\033[33m'; C_END=$'\033[0m'
+else
+    C_HEAD=''; C_OK=''; C_ERR=''; C_SKIP=''; C_END=''
+fi
+
+# ---------- 进度 ----------
+STEP=0
+TOTAL=0
+
+progress_begin() {
+    STEP=$((STEP + 1))
+    printf '\n%s[%02d/%02d]%s %s\n' "$C_HEAD" "$STEP" "$TOTAL" "$C_END" "$1"
+}
+
+progress_ok() {
+    printf '%s   ✓ 完成%s (耗时 %ss)\n' "$C_OK" "$C_END" "$1"
+}
+
+progress_skip() {
+    printf '%s   ↷ 已安装，跳过%s\n' "$C_SKIP" "$C_END"
+}
+
+progress_fail() {
+    printf '%s   ✗ 失败 (退出码 %s)%s\n' "$C_ERR" "$1" "$C_END"
+}
+
+# 普通命令执行
+run() {
+    local display="${*//_/ }"
+    progress_begin "$display"
+    local t0; t0=$(date +%s)
+    if "$@"; then
+        progress_ok "$(( $(date +%s) - t0 ))"
+    else
+        local rc=$?
+        progress_fail "$rc"
+        return "$rc"
+    fi
+}
+
+# 容错执行：失败不中断
+run_try() {
+    run "$@" || true
+}
+
+# ---------- 安装检查 ----------
+# npm 全局包是否已安装
+npm_pkg_installed() {
+    npm list -g --depth=0 "$1" >/dev/null 2>&1
+}
+
+# go install 产物是否已存在于 ~/go/bin（或 $GOBIN）
+go_bin_installed() {
+    [ -e "${GOBIN}/$1" ]
+}
+
+# pyenv 是否已安装某 Python 版本
+pyenv_version_installed() {
+    pyenv versions --bare 2>/dev/null | grep -qx "$1"
+}
+
+# ---------- 带检查的安装封装 ----------
+run_npm_install() {
+    local pkg=$1
+    progress_begin "npm install -g $pkg"
+    if npm_pkg_installed "$pkg"; then
+        progress_skip
+        return 0
+    fi
+    local t0; t0=$(date +%s)
+    if npm install -g "$pkg"; then
+        progress_ok "$(( $(date +%s) - t0 ))"
+    else
+        local rc=$?
+        progress_fail "$rc"
+        return "$rc"
+    fi
+}
+
+run_go_install() {
+    local path=$1 bin=$2
+    progress_begin "go install $path"
+    if go_bin_installed "$bin"; then
+        progress_skip
+        return 0
+    fi
+    local t0; t0=$(date +%s)
+    if go install "$path"; then
+        progress_ok "$(( $(date +%s) - t0 ))"
+    else
+        local rc=$?
+        progress_fail "$rc"
+        return "$rc"
+    fi
+}
+
+run_pyenv_install() {
+    local version=$1
+    progress_begin "pyenv install $version"
+    if pyenv_version_installed "$version"; then
+        progress_skip
+        return 0
+    fi
+    local t0; t0=$(date +%s)
+    # -s: 跳过已存在版本（理论上不会走到，作为双保险避免交互提示）
+    if pyenv install -s "$version"; then
+        progress_ok "$(( $(date +%s) - t0 ))"
+    else
+        local rc=$?
+        progress_fail "$rc"
+        return "$rc"
+    fi
+}
+
+# ---------- 特殊命令封装 ----------
+# g install latest 在版本已安装时返回 1（但这是期望状态），需视为成功
+g_install_latest() {
+    local out rc
+    out=$(g install latest 2>&1) && rc=0 || rc=$?
+    echo "$out"
+    [ "$rc" -eq 0 ] && return 0
+    if echo "$out" | grep -q "has been installed"; then
+        return 0
+    fi
+    return "$rc"
+}
+
+# ---------- 环境 ----------
+load_env() {
+    export NVM_DIR="$HOME/.nvm"
+    # shellcheck source=/dev/null
+    . "$NVM_DIR/nvm.sh"
+    if command -v pyenv &>/dev/null; then
+        eval "$(pyenv init -)"
+    fi
+    export GOPATH="${GOPATH:-$HOME/go}"
+    export GOBIN="${GOBIN:-$GOPATH/bin}"
+    export PATH="$GOBIN:$PATH"
+}
+
+check_tools() {
+    local missing=0
+    if ! command -v g &>/dev/null; then
+        echo "错误: 未找到 g (Go 版本管理器)。请先自行安装 g。" >&2
+        missing=1
+    fi
+    if [ ! -s "$HOME/.nvm/nvm.sh" ]; then
+        echo "错误: 未找到 nvm ($HOME/.nvm/nvm.sh)。请先自行安装 nvm。" >&2
+        missing=1
+    fi
+    if ! command -v pyenv &>/dev/null; then
+        echo "错误: 未找到 pyenv。请先自行安装 pyenv。" >&2
+        missing=1
+    fi
+    if [ "$missing" -ne 0 ]; then
+        echo "请安装缺失的工具后重新运行。" >&2
+        exit 1
+    fi
+}
+
+# ---------- 各段步骤数（用于进度显示，增删命令时需同步更新） ----------
+NODE_STEPS=15   # nvm1 + npm批量拆4 + 单独npm7 + dsh plugin1 + 缓存2
+GO_STEPS=12     # g1 + go install9 + clean2（已去掉 gguf-parser）
+PIP_STEPS=6     # pyenv2 + pip1 + pip安装2 + 缓存1
+
+# ---------- Node.js ----------
+do_node() {
+    echo
+    echo "${C_HEAD}=== Node.js ===${C_END}"
+    run nvm install --lts
+    # 原先的 npm i -g nrm skills bun pnpm 拆开，便于逐个检查跳过
+    run_npm_install nrm
+    run_npm_install skills
+    run_npm_install bun
+    run_npm_install pnpm
+    run_npm_install @bitwarden/cli
+    run_npm_install @earendil-works/pi-coding-agent
+    run_npm_install @anthropic-ai/claude-code
+    run_npm_install @deepseek-ai/dsh
+    run_try dsh plugin --profile web add dsh-pet
+    run_npm_install rea-agents
+    run_npm_install @opencode/cli
+    run_npm_install @openai/codex
+    # 所有 npm 安装完成后清理缓存
+    run_try nvm cache clear
+    run_try npm cache verify
+}
+
+# ---------- Go ----------
+do_go() {
+    echo
+    echo "${C_HEAD}=== Go ===${C_END}"
+    run g_install_latest
+
+    run_go_install github.com/restic/restic/cmd/restic@latest restic
+    run_go_install github.com/rclone/rclone@latest rclone
+    run_go_install github.com/junegunn/fzf@latest fzf
+
+    # Go AI 工具
+    run_go_install github.com/hybridgroup/yzma@latest yzma
+    run_go_install github.com/charmbracelet/crush@latest crush
+
+    # Go Docker 工具
+    run_go_install github.com/google/go-containerregistry/cmd/crane@latest crane
+    run_go_install github.com/regclient/regclient/cmd/regctl@latest regctl
+
+    # GitHub / GitLab CLI
+    run_go_install github.com/cli/cli/v2/cmd/gh@latest gh
+    run_go_install gitlab.com/gitlab-org/cli/cmd/glab@latest glab
+
+    # 所有 go install 完成后清理缓存
+    run g clean
+    run go clean -cache
+}
+
+# ---------- Python ----------
+do_pip() {
+    echo
+    echo "${C_HEAD}=== Python ===${C_END}"
+    run_pyenv_install 3.12.3
+    run pyenv global 3.12.3
+    run python -m pip install "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+    run pip install httpie
+    run pip install cli-anything-hub
+    # 所有 pip 安装完成后清理缓存
+    run_try pip cache purge
+}
+
+usage() {
+    local name; name=$(basename "$0")
+    cat <<EOF
+用法: $name [命令...]
+
+命令:
+  (无参数)       执行全部（等价于 all）
+  all            执行全部
+  npm, node      仅 Node.js / npm 相关
+  go             仅 Go 相关
+  pip, py        仅 Python / pip 相关
+  -h, --help     显示本帮助
+
+说明:
+  - npm 包在 npm list -g 中已存在则跳过安装
+  - go 二进制在 \$GOBIN（默认 ~/go/bin）中已存在则跳过安装
+  - Python 版本在 pyenv versions 中已存在则跳过安装
+  - 缓存清理类命令始终执行
+
+示例:
+  $name                # 全部
+  $name npm            # 仅 Node
+  $name go             # 仅 Go
+  $name pip            # 仅 Python
+  $name npm go         # Node + Go
+EOF
+}
+
+main() {
+    local sections=()
+    if [ $# -eq 0 ]; then
+        sections=(node go pip)
+    else
+        for arg in "$@"; do
+            case $arg in
+                all)            sections+=(node go pip);;
+                node|npm)       sections+=(node);;
+                go)             sections+=(go);;
+                pip|py|python)  sections+=(pip);;
+                -h|--help)      usage; exit 0;;
+                *)              echo "未知参数: $arg" >&2; usage >&2; exit 1;;
+            esac
+        done
+        mapfile -t sections < <(printf '%s\n' "${sections[@]}" | awk '!seen[$0]++')
+    fi
+
+    TOTAL=0
+    for s in "${sections[@]}"; do
+        case $s in
+            node) TOTAL=$((TOTAL + NODE_STEPS));;
+            go)   TOTAL=$((TOTAL + GO_STEPS));;
+            pip)  TOTAL=$((TOTAL + PIP_STEPS));;
+        esac
+    done
+
+    check_tools
+    load_env
+
+    echo "${C_HEAD}==> 开始执行，共 $TOTAL 步${C_END}"
+
+    for s in "${sections[@]}"; do
+        "do_$s"
+    done
+
+    echo
+    echo "${C_OK}==> 全部完成。${C_END}"
+}
+
+main "$@"
