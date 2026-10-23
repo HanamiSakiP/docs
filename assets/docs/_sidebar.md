@@ -22,17 +22,13 @@
   * [4. WebDAV](assets/docs/AI/Linux/webdav.md)
   * [5. go-gin-grom](assets/docs/AI/Linux/go-2.md)
   * [6. mysql-redis](assets/docs/AI/Linux/MariaDB.md)
-  * [7. RPC-gRPC](assets/docs/AI/Linux/RPC.md)
-  * [8. ParrotOS](assets/docs/AI/Linux/ParrotOS.md)
-  * [9. Qubes-OS](assets/docs/AI/Linux/Qubes-OS.md)
+  * [7. ParrotOS](assets/docs/AI/Linux/ParrotOS.md)
 * docker
   * [1. debian及docker常用命令](/assets/docs/docker/debian_docker.md)
   * [2. docker储存空间转移](/assets/docs/docker/docker磁盘空间不足解决办法.md)
   * [3. docker compose命令](assets/docs/docker/docker%20compose命令.md)
   * [4. docker常用命令](assets/docs/docker/docker命令.md)
   * [5. docker入门配置](assets/docs/docker/docker入门.md)
-  * [6. Dockerfile编写](assets/docs/docker/Dockerfile.md)
-  * [7. K8S使用](assets/docs/docker/K8S.md)
 * vue
   * [1. vue部署教程](assets/docs/test/web/vue/vue.md)
   * [2. vue基础篇](assets/docs/test/web/vue/vue-2.md)  

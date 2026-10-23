@@ -25,11 +25,9 @@ install -m755 ~/.local/share/devmgr/AI/dev/tool ~/.local/bin
 install -m755 ~/.local/share/devmgr/AI/dev/undev ~/.local/bin
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
-ls ~/.local/bin
 dev restore # install
 dev-tool
 tool
-source ~/.bashrc
 ls ~/.local/share/devmgr/backups
 ```
 
@@ -78,13 +76,6 @@ libffi-dev \
 liblzma-dev \
 pkg-config
 ```
-
-
-</details>
-
-<details>
-<summary>tools</summary>
-
 ```bash
 docsify serve .
 # 每天02点执行rclone同步
@@ -94,52 +85,10 @@ gh release download --repo denisidoro/navi --pattern "*x86_64-unknown-linux-musl
 gh release download --repo sxyazi/yazi --pattern "*x86_64-unknown-linux-musl*"
 gh release download --repo zellij-org/zellij --pattern "*x86_64-unknown-linux-musl*"
 ```
-cli
 ```bash
-# node
-# 2026.10.21
-nvm install --lts # v26.12.1 / v24.22.1 / v22.23.4
-nvm cache clear
-npm cache verify
-npm i -g nrm skills bun pnpm
-npm i docsify-cli -g
-npm install -g @bitwarden/cli
-npm install -g @earendil-works/pi-coding-agent
-npm install -g @anthropic-ai/claude-code
-npm install -g @deepseek-ai/dsh
-dsh plugin --profile web add dsh-pet
-npm install --global rea-agents
-npx skills add HKUDS/CLI-Anything --skill cli-hub-meta-skill -g -y
-npm install -g @opencode/cli
-npm install -g @openai/codex
-# go
-# CVE-2026-111943
-g install latest # 1.27.3 / 1.26.10
-g clean
-go clean -cache
-go install github.com/restic/restic/cmd/restic@latest
-go install github.com/rclone/rclone@latest
-go install github.com/junegunn/fzf@latest
-go install github.com/micro-editor/micro/v2@latest
-# go-ai
-go install github.com/hybridgroup/yzma@latest
-go install github.com/charmbracelet/crush@latest
-go install github.com/gpustack/gguf-parser-go/cmd/gguf-parser@latest
-# go-docker
-go install github.com/google/go-containerregistry/cmd/crane@latest
-go install github.com/regclient/regclient/cmd/regctl@latest
-# GitHub
-go install github.com/cli/cli/v2/cmd/gh@latest
-# GitLab
-go install gitlab.com/gitlab-org/cli/cmd/glab@latest
-# python
-pyenv install 3.12.3
-# 2026.10.19
-# users must update pip to >= 26.2.2
-python -m pip install "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
-pip cache purge
-pip install httpie
-pip install cli-anything-hub
+# 更新
+git pull
+git submodule update --init --recursive
 ```
 
 </details>
