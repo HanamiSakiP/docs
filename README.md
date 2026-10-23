@@ -85,11 +85,6 @@ gh release download --repo denisidoro/navi --pattern "*x86_64-unknown-linux-musl
 gh release download --repo sxyazi/yazi --pattern "*x86_64-unknown-linux-musl*"
 gh release download --repo zellij-org/zellij --pattern "*x86_64-unknown-linux-musl*"
 ```
-```bash
-# 更新
-git pull
-git submodule update --init --recursive
-```
 
 </details>
 
@@ -125,60 +120,6 @@ git config --global --unset url."https://ghproxy.com/https://github.com/"
 # git clone https://ghproxy.com/https://github.com/HanamiSakiP/AI.git
 # 查看当前git源
 git config --global -l | grep insteadOf
-```
-debian-apt
-```bash
-cat > fix_source.sh <<'S'
-#!/bin/bash
-set -e
-rm -f /etc/apt/sources.list.d/*.bak.*
-CODENAME=$(awk -F'=' '/^VERSION_CODENAME=/{gsub(/"/,"");print $2}' /etc/os-release)
-
-if [ -f "/etc/apt/sources.list.d/debian.sources" ];then
-cp /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list.d/debian.sources.old
-echo 'Types: deb' > /etc/apt/sources.list.d/debian.sources
-echo 'URIs: http://mirrors.tuna.tsinghua.edu.cn/debian' >> /etc/apt/sources.list.d/debian.sources
-echo "Suites: ${CODENAME} ${CODENAME}-updates" >> /etc/apt/sources.list.d/debian.sources
-echo 'Components: main contrib non-free non-free-firmware' >> /etc/apt/sources.list.d/debian.sources
-echo 'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' >> /etc/apt/sources.list.d/debian.sources
-echo '' >> /etc/apt/sources.list.d/debian.sources
-echo 'Types: deb' >> /etc/apt/sources.list.d/debian.sources
-echo 'URIs: http://mirrors.tuna.tsinghua.edu.cn/debian-security' >> /etc/apt/sources.list.d/debian.sources
-echo "Suites: ${CODENAME}-security" >> /etc/apt/sources.list.d/debian.sources
-echo 'Components: main contrib non-free non-free-firmware' >> /etc/apt/sources.list.d/debian.sources
-echo 'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' >> /etc/apt/sources.list.d/debian.sources
-else
-cp /etc/apt/sources.list /etc/apt/sources.list.old
-echo "deb http://mirrors.tuna.tsinghua.edu.cn/debian ${CODENAME} main contrib non-free non-free-firmware" > /etc/apt/sources.list
-echo "deb http://mirrors.tuna.tsinghua.edu.cn/debian ${CODENAME}-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list
-echo "deb http://mirrors.tuna.tsinghua.edu.cn/debian-security ${CODENAME}-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list
-fi
-
-apt update
-apt install -y ca-certificates
-
-if [ -f "/etc/apt/sources.list.d/debian.sources" ];then
-echo 'Types: deb' > /etc/apt/sources.list.d/debian.sources
-echo 'URIs: https://mirrors.tuna.tsinghua.edu.cn/debian' >> /etc/apt/sources.list.d/debian.sources
-echo "Suites: ${CODENAME} ${CODENAME}-updates" >> /etc/apt/sources.list.d/debian.sources
-echo 'Components: main contrib non-free non-free-firmware' >> /etc/apt/sources.list.d/debian.sources
-echo 'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' >> /etc/apt/sources.list.d/debian.sources
-echo '' >> /etc/apt/sources.list.d/debian.sources
-echo 'Types: deb' >> /etc/apt/sources.list.d/debian.sources
-echo 'URIs: https://mirrors.tuna.tsinghua.edu.cn/debian-security' >> /etc/apt/sources.list.d/debian.sources
-echo "Suites: ${CODENAME}-security" >> /etc/apt/sources.list.d/debian.sources
-echo 'Components: main contrib non-free non-free-firmware' >> /etc/apt/sources.list.d/debian.sources
-echo 'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' >> /etc/apt/sources.list.d/debian.sources
-else
-echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian ${CODENAME} main contrib non-free non-free-firmware" > /etc/apt/sources.list
-echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian ${CODENAME}-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list
-echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian-security ${CODENAME}-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list
-fi
-
-apt update
-apt clean
-rm -rf /var/lib/apt/lists/*
-S
 ```
 
 </details>
