@@ -60,6 +60,7 @@ install_hint() {
     codex)    echo "  codex    : npm i -g @openai/codex" ;;
     fzf)      echo "  fzf      : sudo apt install fzf / sudo dnf install fzf / brew install fzf" ;;
     rclone)   echo "  rclone   : curl https://rclone.org/install.sh | sudo bash / brew install rclone / sudo apt install rclone" ;;
+    restic)   echo "  restic   : sudo apt install restic / sudo dnf install restic / brew install restic（或 https://github.com/restic/restic/releases 下载静态二进制）" ;;
     dsh)      echo "  dsh      : npx @deepseek-ai/dsh web  或  npm i -g @deepseek-ai/dsh" ;;
     rea)      echo "  rea      : npx rea-agents setup  或  npm i -g rea-agents" ;;
     *)        echo "  $1       : 请自行安装" ;;
@@ -83,7 +84,7 @@ need_tools() {
 
 # ---------------- 启动前自检 ----------------
 preflight_check() {
-  local tools=(git gh glab claude opencode codex fzf rclone)
+  local tools=(git gh glab claude opencode codex fzf rclone restic)
   local missing=() t
   for t in "${tools[@]}"; do
     have "$t" || missing+=("$t")
@@ -893,18 +894,119 @@ do_rclone_sync() {
   "${cmd[@]}"
 }
 
-rclone_menu() {
+# ---------------- restic 快捷操作 ----------------
+# 默认 restic 仓库与默认备份源目录，可通过环境变量覆盖
+RESTIC_REPO="${RESTIC_REPO:-$HOME/.local/share/devmgr/restic}"
+RESTIC_BACKUP_DIR="${RESTIC_BACKUP_DIR:-$HOME/.local/share/devmgr/backups}"
+
+# 每次操作前询问仓库路径，回车使用默认 RESTIC_REPO
+ask_restic_repo() {
+  local repo
+  read -r -p "restic 仓库路径（默认 ${RESTIC_REPO}，回车沿用）: " repo
+  repo=${repo:-$RESTIC_REPO}
+  repo=$(expand_tilde "$repo")
+  printf '%s' "$repo"
+}
+
+do_restic_init() {
+  need_tools restic || return 1
+  local repo
+  repo=$(ask_restic_repo)
+  if [[ -d "$repo" ]]; then
+    echo "${YELLOW}restic 仓库已存在: $repo${NC}"
+    return 0
+  fi
+  run restic -r "$repo" init
+}
+
+do_restic_snapshots() {
+  need_tools restic || return 1
+  local repo
+  repo=$(ask_restic_repo)
+  run restic -r "$repo" snapshots
+}
+
+do_restic_ls() {
+  need_tools restic || return 1
+  local repo id
+  repo=$(ask_restic_repo)
+  read -r -p "快照 ID（留空 = latest）: " id
+  id=${id:-latest}
+  run restic -r "$repo" ls "$id"
+}
+
+do_restic_ls_path() {
+  need_tools restic || return 1
+  local repo id path
+  repo=$(ask_restic_repo)
+  read -r -p "快照 ID（留空 = latest）: " id
+  id=${id:-latest}
+  read -r -p "路径（例如 backups/g，留空 = 全部）: " path
+  if [[ -n "$path" ]]; then
+    run restic -r "$repo" ls "$id" --path "$path"
+  else
+    run restic -r "$repo" ls "$id"
+  fi
+}
+
+do_restic_restore_include() {
+  need_tools restic || return 1
+  local repo id target include
+  repo=$(ask_restic_repo)
+  read -r -p "快照 ID（留空 = latest）: " id
+  id=${id:-latest}
+  read -r -p "恢复目标目录（--target，默认 restore）: " target
+  target=${target:-restore}
+  read -r -p "包含路径（--include，默认 ${RESTIC_BACKUP_DIR}）: " include
+  include=${include:-$RESTIC_BACKUP_DIR}
+  include=$(expand_tilde "$include")
+  run restic -r "$repo" restore "$id" --target "$target" --include "$include"
+}
+
+do_restic_restore_all() {
+  need_tools restic || return 1
+  local repo id target
+  repo=$(ask_restic_repo)
+  read -r -p "快照 ID（留空 = latest）: " id
+  id=${id:-latest}
+  read -r -p "恢复目标目录（--target，默认 restore）: " target
+  target=${target:-restore}
+  run restic -r "$repo" restore "$id" --target "$target"
+}
+
+do_restic_backup() {
+  need_tools restic || return 1
+  local repo path
+  repo=$(ask_restic_repo)
+  read -r -p "要备份的路径（默认 ${RESTIC_BACKUP_DIR}）: " path
+  path=${path:-$RESTIC_BACKUP_DIR}
+  path=$(expand_tilde "$path")
+  run restic -r "$repo" backup "$path"
+}
+
+rclone_restic_menu() {
   while true; do
     echo
     hr
-    echo "${BOLD}rclone 快捷操作${NC}"
+    echo "${BOLD}rclone / restic 快捷操作${NC}"
     hr
+    echo "${CYAN}--- rclone ---${NC}"
     echo "  1) 登录 / 添加 remote 配置   (rclone config)"
     echo "  2) 查看 rclone 登录配置指引"
     echo "  ${RED}3) 列出所有已配置 remote     (rclone listremotes)${NC}"
     echo "  4) 查看 remote 内容（ls/lsd/lsf，默认 k:backups）"
     echo "  ${RED}5) 从 remote 复制到本地      (rclone copy，默认 k:backups → ~/.local/share/devmgr/)${NC}"
     echo "  ${RED}6) 从本地同步到 remote       (rclone sync，默认 ~/.local/share/devmgr/ → k:backups，默认 --dry-run)${NC}"
+    echo
+    echo "${CYAN}--- restic（默认仓库: ${RESTIC_REPO}，默认备份源: ${RESTIC_BACKUP_DIR}）---${NC}"
+    echo "  7) 初始化 restic 仓库        (restic init)"
+    echo "  ${RED}8) 查看快照列表              (restic snapshots)${NC}"
+    echo "  ${RED}9) 查看快照内容（全部）      (restic ls ID)${NC}"
+    echo "  10) 查看快照某个内容         (restic ls ID --path ...)"
+    echo "  11) 恢复快照中某个内容到本地 (restic restore latest --target ... --include ...)"
+    echo "  12) 恢复快照中所有文件到本地 (restic restore latest --target ...)"
+    echo "  ${RED}13) 使用 restic 仓库备份     (restic backup ${RESTIC_BACKUP_DIR})${NC}"
+    echo
     echo "  0) 返回上级"
     read -r -p "请选择: " c
     case "$c" in
@@ -914,6 +1016,13 @@ rclone_menu() {
       4) do_rclone_ls ;;
       5) do_rclone_copy ;;
       6) do_rclone_sync ;;
+      7) do_restic_init ;;
+      8) do_restic_snapshots ;;
+      9) do_restic_ls ;;
+      10) do_restic_ls_path ;;
+      11) do_restic_restore_include ;;
+      12) do_restic_restore_all ;;
+      13) do_restic_backup ;;
       0|q|Q) return 0 ;;
       *) echo "${RED}无效选项${NC}" ;;
     esac
@@ -936,7 +1045,7 @@ main_menu() {
     echo "${RED}5) 快速找到所有 git 项目并跳转  (fzf)${NC}"
     echo "${RED}6) 快速创建 git 项目并跳转  (~/.local/share/devmgr/<name>)${NC}"
     echo "${RED}7) gh 查看 / 下载 Release${NC}"
-    echo "${RED}8) rclone 快捷操作  (config / list / copy / sync)${NC}"
+    echo "${RED}8) rclone / restic 快捷操作  (config / list / copy / sync / snapshots / restore / backup)${NC}"
     echo "9) 全部检查（1 + 2）"
     echo "0) 退出"
     read -r -p "请选择: " choice
@@ -948,7 +1057,7 @@ main_menu() {
       5) do_find_git_projects ;;
       6) do_create_git_project ;;
       7) do_gh_release_menu ;;
-      8) rclone_menu ;;
+      8) rclone_restic_menu ;;
       9) check_git_auth; echo; check_ai_auth ;;
       0|q|Q)
         echo "Bye."

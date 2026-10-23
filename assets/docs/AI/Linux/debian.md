@@ -27,39 +27,9 @@ gh repo list
 gh repo list --limit 10 --json nameWithOwner --jq '.[].nameWithOwner' | xargs -L1 gh repo clone
 ```
 
-更新
-```bash
-git status
-git add . && git commit -m "test"
-git push
-git log
-```
-
-更新说明
-```bash
-# 查看已配置的远程仓库,名称 + 对应 URL
-git remote -v
-# 查看当前状态
-git status
-# 添加所有更改文件到暂存区
-git add .
-# 推送本地仓库，并描述
-git commit -m "test"
-# 推送远程仓库
-git push
-# 查看提交历史
-git log
-```
-
 </details>
 
 ## git AND tmux
-
-### git AND tmux install
-```bash
-apt update
-apt install -y tmux git nano curl
-```
 
 ### tmux
 ```bash
@@ -101,47 +71,12 @@ gh auth login --with-token < mytoken.txt
 # add SSH
 gh ssh-key add ~/.ssh/id_rsa.pub -t "test"
 ```
-git USE
-```bash
-# 在当前目录初始化git
-git init
-# 添加远程仓库
-git remote add origin git@github.com:username/repository.git
-# 添加所有文件
-git add .
-# 推送本地仓库，并描述
-git commit -m "Initial commit with all files"
-# 推送远程仓库
-git push -u origin master
-```
 
 <details>
 <summary>git 后续使用</summary>
 
-```bash
-# 查看当前状态
-git status
-# 添加更改
-# 添加所有更改到暂存区
-git add .
-# 添加特定文件
-# git add 文件名
-# 提交更改
-git commit -m "描述你的更改"
-# 推送更改到远程仓库(默认为初次配置的远程仓库)
-git push
-# 查看提交历史
-git log
-# 清空暂存区
-# git reset
-```
 
-</details>
-<details>
-<summary>git 后续使用2</summary>
-
-
- git 后续使用2
+ git 后续使用
 ```bash
 # 添加子模块
 git submodule add https://github.com/iphysresearch/GWToolkit.git GWToolkit
@@ -242,9 +177,6 @@ ollama pull qwen3.5:0.8b
 ollama run qwen3.5:0.8b
 ```
 
-
-
-
 * [浏览器夜间插件](https://addons.mozilla.org/firefox/addon/dark-background-light-text/)
 ```text
 #ffffff
@@ -255,4 +187,4 @@ ollama run qwen3.5:0.8b
 #8080ff
 ```
 
-* [显卡驱动](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/)
+* [显卡n卡驱动](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/)
