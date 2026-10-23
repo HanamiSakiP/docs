@@ -65,18 +65,6 @@ apt update
 apt install curl git -y # nano
 ```
 ```bash
-# pyenv依赖
-apt install -y build-essential \
-libssl-dev \
-zlib1g-dev \
-libbz2-dev \
-libreadline-dev \
-libsqlite3-dev \
-libffi-dev \
-liblzma-dev \
-pkg-config
-```
-```bash
 docsify serve .
 # 每天02点执行rclone同步
 0 2 * * * flock -n /tmp/rclone.lock ~/go/bin/rclone sync /本地/路径 remote:云端路径 --log-file /home/你的用户名/rclone-sync.log --log-level INFO

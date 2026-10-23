@@ -419,6 +419,62 @@ install_nvm_online() {
 }
 
 # ================================================================
+# pyenv 系统依赖 (--lib)
+# ================================================================
+install_pyenv_deps() {
+    local -a pkgs=(
+        build-essential
+        libssl-dev
+        zlib1g-dev
+        libbz2-dev
+        libreadline-dev
+        libsqlite3-dev
+        libffi-dev
+        liblzma-dev
+        pkg-config
+    )
+
+    if ! command -v apt-get >/dev/null 2>&1; then
+        log_warn "未检测到 apt-get，无法自动安装系统依赖"
+        log_warn "请手动安装: ${pkgs[*]}"
+        return 1
+    fi
+
+    local -a apt_cmd=()
+    if [ "$(id -u)" -eq 0 ]; then
+        apt_cmd=(apt-get)
+    elif command -v sudo >/dev/null 2>&1; then
+        apt_cmd=(sudo apt-get)
+    else
+        log_error "需要 root 或 sudo 权限来安装系统依赖"
+        return 1
+    fi
+
+    log_info "安装 pyenv 系统依赖: ${pkgs[*]}"
+
+    # apt 索引更新（失败只警告，继续尝试安装）
+    substep "更新 apt 索引"
+    local logfile rc=0
+    logfile="$(mktemp)"
+    if ! DEBIAN_FRONTEND=noninteractive "${apt_cmd[@]}" update -qq >"$logfile" 2>&1; then
+        log_warn "apt-get update 失败（继续尝试安装）"
+        sed 's/^/      | /' "$logfile" | tail -n 10 >&2
+    fi
+    rm -f "$logfile"
+
+    logfile="$(mktemp)"
+    DEBIAN_FRONTEND=noninteractive _run_progress "安装系统依赖" "$logfile" \
+        "${apt_cmd[@]}" install -y -qq "${pkgs[@]}" || rc=$?
+    rm -f "$logfile"
+
+    if [ "$rc" -ne 0 ]; then
+        log_warn "系统依赖安装失败"
+        return 1
+    fi
+    log_ok "系统依赖安装完成"
+}
+
+# ================================================================
 # 备份
 # ================================================================
 backup_g() {
@@ -908,35 +964,63 @@ clean_tool() {
 # ================================================================
 cmd_install() {
     local use_cn="${USE_CN_MIRROR:-0}"
-    local force=0 no_restore=0
+    local force=0 no_restore=0 install_libs=0
     local -a tools=()
-    local arg t
+    local arg t tools_explicit=0
 
     for arg in "$@"; do
         case "$arg" in
             --cn|-c)       use_cn=1 ;;
             --force|-f)    force=1 ;;
             --no-restore)  no_restore=1 ;;
+            --lib|--libs)  install_libs=1 ;;
             -h|--help)     show_help; exit 0 ;;
-            all)           for t in pyenv g nvm; do
-                               [[ " ${tools[*]:-} " == *" $t "* ]] || tools+=("$t")
-                           done ;;
+            all)
+                tools_explicit=1
+                for t in pyenv g nvm; do
+                    [[ " ${tools[*]:-} " == *" $t "* ]] || tools+=("$t")
+                done
+                ;;
             pyenv|g|nvm)
+                tools_explicit=1
                 [[ " ${tools[*]:-} " == *" $arg "* ]] || tools+=("$arg")
                 ;;
             *)
                 log_error "未知参数: $arg"; return 1 ;;
         esac
     done
-    [ ${#tools[@]} -eq 0 ] && tools=(pyenv g nvm)
     USE_CN_MIRROR="$use_cn"
 
     printf '\n%s=== devmgr install ===%s\n' "$BOLD" "$NC"
-    log_info "目标工具: ${tools[*]}"
     [ "$USE_CN_MIRROR" = "1" ] && log_info "启用国内镜像源"
     [ "$force" = "1" ]         && log_warn "启用 --force，将重新安装已存在的工具"
 
+    # ---- 系统依赖 (--lib) ----
+    if [ "$install_libs" -eq 1 ]; then
+        local lib_rc=0
+        install_pyenv_deps || lib_rc=$?
+        # 若用户未显式指定工具，则视为“仅安装系统依赖”
+        if [ "$tools_explicit" -eq 0 ]; then
+            if [ "$lib_rc" -ne 0 ]; then
+                log_error "系统依赖安装失败"
+                return 1
+            fi
+            log_ok "=== 系统依赖安装完成（未指定工具，跳过工具安装） ==="
+            return 0
+        fi
+        if [ "$lib_rc" -ne 0 ]; then
+            log_warn "系统依赖安装失败，继续处理工具"
+        fi
+    fi
+
+    # 默认工具（既没指定工具也没 --lib 时，默认全部工具）
+    if [ ${#tools[@]} -eq 0 ]; then
+        tools=(pyenv g nvm)
+    fi
+
     check_dependencies
+
+    log_info "目标工具: ${tools[*]}"
 
     # ---- 前置：检查已安装 ----
     local -a to_process=() skipped=()
@@ -964,7 +1048,6 @@ cmd_install() {
         i=$((i+1))
         printf '\n%s==> [%d/%d] %s%s\n' "$BOLD" "$i" "$total" "$t" "$NC"
 
-        # --force 时清理
         if [ "$force" -eq 1 ] && is_tool_installed "$t"; then
             substep "清理已有的 $t"
             clean_tool "$t"
@@ -973,7 +1056,6 @@ cmd_install() {
         rc=0
         local restored=0
 
-        # 1) 尝试从备份恢复
         if [ "$no_restore" -ne 1 ]; then
             if try_restore_tool "$t"; then
                 restored=1
@@ -982,7 +1064,6 @@ cmd_install() {
             substep "已禁用本地恢复 (--no-restore)"
         fi
 
-        # 2) 在线安装
         if [ "$restored" -eq 0 ]; then
             substep "在线安装 $t"
             case "$t" in
@@ -1256,15 +1337,16 @@ install 选项:
   --cn, -c        使用国内镜像源
   --force, -f     强制重装（先清理已安装目录）
   --no-restore    跳过本地备份恢复，直接在线安装
-
-restore 选项:
-  --force, -f     覆盖已安装的工具
+  --lib, --libs   安装 pyenv 系统依赖（apt: build-essential 等）
+                  单独使用: 只装依赖，不安装工具
 
 示例:
   $PROG_NAME status
   $PROG_NAME install
   $PROG_NAME install --cn g nvm
   $PROG_NAME install --force pyenv
+  $PROG_NAME install --lib                 # 仅安装 pyenv 系统依赖
+  $PROG_NAME install --lib pyenv           # 装依赖并安装 pyenv
   $PROG_NAME backup all
   $PROG_NAME restore g
   $PROG_NAME restore --force nvm

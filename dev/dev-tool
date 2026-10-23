@@ -219,7 +219,7 @@ do_go() {
 
     # 所有 go install 完成后清理缓存
     run g clean
-    run go clean -cache
+    run go clean -cache -testcache -modcache
 }
 
 # ---------- Python ----------
