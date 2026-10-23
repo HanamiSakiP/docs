@@ -37,6 +37,18 @@ run() {
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
+# 把开头是 ~ 的路径展开为 $HOME（read 不会自动展开）
+expand_tilde() {
+  local p="$1"
+  if [[ "$p" == "~" ]]; then
+    printf '%s' "$HOME"
+  elif [[ "$p" == "~/"* ]]; then
+    printf '%s' "${HOME}/${p#\~/}"
+  else
+    printf '%s' "$p"
+  fi
+}
+
 # ---------------- 安装提示 ----------------
 install_hint() {
   case "$1" in
@@ -47,6 +59,7 @@ install_hint() {
     opencode) echo "  opencode : 参考 https://opencode.ai/docs 安装" ;;
     codex)    echo "  codex    : npm i -g @openai/codex" ;;
     fzf)      echo "  fzf      : sudo apt install fzf / sudo dnf install fzf / brew install fzf" ;;
+    rclone)   echo "  rclone   : curl https://rclone.org/install.sh | sudo bash / brew install rclone / sudo apt install rclone" ;;
     dsh)      echo "  dsh      : npx @deepseek-ai/dsh web  或  npm i -g @deepseek-ai/dsh" ;;
     rea)      echo "  rea      : npx rea-agents setup  或  npm i -g rea-agents" ;;
     *)        echo "  $1       : 请自行安装" ;;
@@ -70,7 +83,7 @@ need_tools() {
 
 # ---------------- 启动前自检 ----------------
 preflight_check() {
-  local tools=(git gh glab claude opencode codex fzf)
+  local tools=(git gh glab claude opencode codex fzf rclone)
   local missing=() t
   for t in "${tools[@]}"; do
     have "$t" || missing+=("$t")
@@ -314,7 +327,6 @@ do_gh_create_push() {
   run gh repo create "$name" "--$vis" --source=. --push
 }
 
-# 情况3 —— 4) 使用 git clone 下载远程仓库到本地
 do_git_clone() {
   need_tools git || return 1
   local url dir
@@ -328,7 +340,6 @@ do_git_clone() {
   fi
 }
 
-# 情况3 —— 4) 使用 gh repo clone 下载远程仓库到本地
 do_gh_repo_clone() {
   need_tools git gh || return 1
   local repo dir
@@ -342,7 +353,6 @@ do_gh_repo_clone() {
   fi
 }
 
-# 更新 git 项目：pull + 递归初始化/更新子模块
 do_git_update() {
   need_tools git || return 1
   if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -513,7 +523,29 @@ rea_intro() {
   echo "${RED}文档：https://rea.tools/  |  https://github.com/morluto/rea${NC}"
 }
 
-# ---------------- 7. 快速找到所有 git 项目 ----------------
+# ---------------- 5. AI 工具介绍（合并 dsh + rea-agents） ----------------
+ai_tools_intro() {
+  while true; do
+    echo
+    hr
+    echo "${BOLD}AI 工具介绍${NC}"
+    hr
+    echo "  1) @deepseek-ai/dsh 使用介绍"
+    echo "  2) rea-agents 使用介绍"
+    echo "  0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) dsh_intro ;;
+      2) rea_intro ;;
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
+}
+
+# ---------------- 6. 快速找到所有 git 项目 ----------------
 do_find_git_projects() {
   need_tools find fzf || return 1
   local root dir ans
@@ -555,7 +587,7 @@ do_find_git_projects() {
   fi
 }
 
-# ---------------- 8. 快速创建 git 项目并跳转 ----------------
+# ---------------- 7. 快速创建 git 项目并跳转 ----------------
 do_create_git_project() {
   need_tools git || return 1
   local base="${HOME}/.local/share/devmgr"
@@ -605,7 +637,7 @@ do_create_git_project() {
   fi
 }
 
-# ---------------- 9. gh 查看 / 下载 Release ----------------
+# ---------------- 8. gh 查看 / 下载 Release ----------------
 do_gh_release_menu() {
   need_tools git gh || return 1
 
@@ -693,10 +725,195 @@ do_gh_release_menu() {
         [[ "$clobber" =~ ^[Yy]$ ]] && cmd+=(--clobber)
         cmd+=("${repo_opt[@]}")
 
+        local dl_dir="${dir:-.}"
+        local -a expected_assets=()
+        local view_tag="$tag"
+        if [[ -z "$view_tag" ]]; then
+          view_tag=$(gh release view "${repo_opt[@]}" --json tagName -q .tagName 2>/dev/null || true)
+        fi
+        if [[ -n "$view_tag" ]]; then
+          local assets_raw
+          assets_raw=$(gh release view "$view_tag" "${repo_opt[@]}" --json assets -q '.assets[].name' 2>/dev/null || true)
+          if [[ -n "$assets_raw" ]]; then
+            while IFS= read -r asset; do
+              [[ -z "$asset" ]] && continue
+              if [[ -n "$pattern" ]]; then
+                # 使用 glob 匹配资产名
+                # shellcheck disable=SC2053
+                if [[ "$asset" == $pattern ]]; then
+                  expected_assets+=("$asset")
+                fi
+              else
+                expected_assets+=("$asset")
+              fi
+            done <<< "$assets_raw"
+          fi
+        fi
+
         echo "${CYAN}>>> ${cmd[*]}${NC}"
-        "${cmd[@]}" || true
+        if "${cmd[@]}"; then
+          echo
+          echo "${GREEN}✓✓✓ 下载成功 ✓✓✓${NC}"
+          local abs_dir
+          abs_dir=$(cd "$dl_dir" 2>/dev/null && pwd) || abs_dir="$dl_dir"
+          echo "下载目录: ${abs_dir}"
+          echo "本次下载文件:"
+          local found_any=0
+          if (( ${#expected_assets[@]} > 0 )); then
+            local asset f line
+            for asset in "${expected_assets[@]}"; do
+              f="${dl_dir}/${asset}"
+              if [[ -f "$f" ]]; then
+                while IFS= read -r line; do
+                  printf '%s%s%s\n' "${RED}" "$line" "${NC}"
+                done < <(ls -lh "$f")
+                found_any=1
+              fi
+            done
+          fi
+          if (( found_any == 0 )); then
+            # 回退：无法获取资产列表时，按 pattern 匹配下载目录中的文件
+            if [[ -n "$pattern" ]]; then
+              while IFS= read -r f; do
+                [[ -z "$f" ]] && continue
+                while IFS= read -r line; do
+                  printf '%s%s%s\n' "${RED}" "$line" "${NC}"
+                done < <(ls -lh "$f")
+              done < <(find "$dl_dir" -maxdepth 1 -type f -name "$pattern" 2>/dev/null)
+            else
+              while IFS= read -r line; do
+                printf '%s%s%s\n' "${RED}" "$line" "${NC}"
+              done < <(ls -lh "$dl_dir" 2>/dev/null)
+            fi
+          fi
+        else
+          echo
+          echo "${RED}✗✗✗ 下载失败！${NC}"
+          echo "${YELLOW}请检查：Tag 是否存在 / pattern 是否匹配 / 网络与权限${NC}"
+        fi
         ;;
 
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
+}
+
+# ---------------- 9. rclone 快捷操作 ----------------
+
+rclone_login_help() {
+  hr
+  echo "${BOLD}rclone 登录配置指引${NC}"
+  hr
+  cat <<'EOF'
+【以 Dropbox 为例】
+  1) 运行 rclone config
+  2) 输入 n 新建 remote
+  3) 输入名字（例如 k）
+  4) 选择服务类型 dropbox（输入对应编号或 dropbox）
+  5) client_id、client_secret 直接回车（使用默认）
+  6) 是否编辑高级配置：n
+  7) 是否自动配置（浏览器 OAuth）：y
+  8) 浏览器打开授权页面，登录 Dropbox 并允许授权
+  9) 回到终端确认 y，完成配置
+
+【其它常见服务】
+  Google Drive    → drive
+  OneDrive        → onedrive
+  S3 兼容（R2/B2）→ s3
+  WebDAV（坚果云）→ webdav
+  SFTP            → sftp
+
+【常用命令】
+  rclone listremotes              列出所有 remote
+  rclone ls  <remote>:<path>      列出文件（含大小）
+  rclone lsd <remote>:<path>      仅列目录
+  rclone lsf <remote>:<path>      简洁列表（脚本友好）
+  rclone copy <src> <dst>         复制（不删除目标多余文件）
+  rclone sync <src> <dst>         同步（会删除目标多余文件，危险，务必先 --dry-run）
+EOF
+}
+
+do_rclone_config() {
+  need_tools rclone || return 1
+  run rclone config
+}
+
+do_rclone_listremotes() {
+  need_tools rclone || return 1
+  run rclone listremotes
+}
+
+do_rclone_ls() {
+  need_tools rclone || return 1
+  local remote path mode target
+  read -r -p "remote 名（默认 k）: " remote
+  remote=${remote:-k}
+  read -r -p "路径（默认 backups）: " path
+  path=${path:-backups}
+  read -r -p "模式 [1=ls 文件 2=lsd 仅目录 3=lsf 简洁]（默认 1）: " mode
+
+  target="${remote}:${path}"
+  case "$mode" in
+    2) run rclone lsd "$target" ;;
+    3) run rclone lsf "$target" ;;
+    *) run rclone ls "$target" ;;
+  esac
+}
+
+do_rclone_copy() {
+  need_tools rclone || return 1
+  local src dst
+  read -r -p "源（默认 k:backups）: " src
+  src=${src:-k:backups}
+  read -r -p "目标（默认 ~/.local/share/devmgr/）: " dst
+  dst=${dst:-~/.local/share/devmgr/}
+  dst=$(expand_tilde "$dst")
+  run rclone copy "$src" "$dst" --progress
+}
+
+do_rclone_sync() {
+  need_tools rclone || return 1
+  local src dst ans
+  read -r -p "源（默认 ~/.local/share/devmgr/）: " src
+  src=${src:-~/.local/share/devmgr/}
+  src=$(expand_tilde "$src")
+  read -r -p "目标（默认 k:backups）: " dst
+  dst=${dst:-k:backups}
+  read -r -p "是否执行真实同步（会删除目标多余文件！）[y/N]: " ans
+
+  local cmd=(rclone sync "$src" "$dst" --progress)
+  if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+    cmd+=(--dry-run)
+    echo "${YELLOW}已启用 --dry-run 模拟执行${NC}"
+  fi
+  echo "${CYAN}>>> ${cmd[*]}${NC}"
+  "${cmd[@]}"
+}
+
+rclone_menu() {
+  while true; do
+    echo
+    hr
+    echo "${BOLD}rclone 快捷操作${NC}"
+    hr
+    echo "  1) 登录 / 添加 remote 配置   (rclone config)"
+    echo "  2) 查看 rclone 登录配置指引"
+    echo "  ${RED}3) 列出所有已配置 remote     (rclone listremotes)${NC}"
+    echo "  4) 查看 remote 内容（ls/lsd/lsf，默认 k:backups）"
+    echo "  ${RED}5) 从 remote 复制到本地      (rclone copy，默认 k:backups → ~/.local/share/devmgr/)${NC}"
+    echo "  ${RED}6) 从本地同步到 remote       (rclone sync，默认 ~/.local/share/devmgr/ → k:backups，默认 --dry-run)${NC}"
+    echo "  0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) do_rclone_config ;;
+      2) rclone_login_help ;;
+      3) do_rclone_listremotes ;;
+      4) do_rclone_ls ;;
+      5) do_rclone_copy ;;
+      6) do_rclone_sync ;;
       0|q|Q) return 0 ;;
       *) echo "${RED}无效选项${NC}" ;;
     esac
@@ -715,11 +932,11 @@ main_menu() {
     echo "${RED}1) 检查 Git 远程仓库登录状态  (gh / glab)${NC}"
     echo "2) 检查 AI-CLI 登录状态 + 查看登录指引  (claude / opencode / codex)"
     echo "${RED}3) Git 交互式操作${NC}"
-    echo "4) @deepseek-ai/dsh 使用介绍"
-    echo "5) rea-agents 使用介绍"
-    echo "${RED}6) 快速找到所有 git 项目并跳转  (fzf)${NC}"
-    echo "${RED}7) 快速创建 git 项目并跳转  (~/.local/share/devmgr/<name>)${NC}"
-    echo "${RED}8) gh 查看 / 下载 Release${NC}"
+    echo "4) AI 工具介绍  (dsh / rea-agents)"
+    echo "${RED}5) 快速找到所有 git 项目并跳转  (fzf)${NC}"
+    echo "${RED}6) 快速创建 git 项目并跳转  (~/.local/share/devmgr/<name>)${NC}"
+    echo "${RED}7) gh 查看 / 下载 Release${NC}"
+    echo "${RED}8) rclone 快捷操作  (config / list / copy / sync)${NC}"
     echo "9) 全部检查（1 + 2）"
     echo "0) 退出"
     read -r -p "请选择: " choice
@@ -727,11 +944,11 @@ main_menu() {
       1) check_git_auth ;;
       2) check_ai_auth_and_help ;;
       3) git_menu ;;
-      4) dsh_intro ;;
-      5) rea_intro ;;
-      6) do_find_git_projects ;;
-      7) do_create_git_project ;;
-      8) do_gh_release_menu ;;
+      4) ai_tools_intro ;;
+      5) do_find_git_projects ;;
+      6) do_create_git_project ;;
+      7) do_gh_release_menu ;;
+      8) rclone_menu ;;
       9) check_git_auth; echo; check_ai_auth ;;
       0|q|Q)
         echo "Bye."

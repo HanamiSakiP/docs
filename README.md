@@ -88,45 +88,8 @@ gh release download --repo zellij-org/zellij --pattern "*x86_64-unknown-linux-mu
 
 </details>
 
-<details>
-<summary>镜像源切换</summary>
-
-```bash
-# go临时
-export GOPROXY=https://goproxy.cn,direct
-# 查看当前go源
-go env | grep GOPROXY
-# npm源切换工具
-npm i -g nrm
-# 2、查看可选镜像源
-nrm ls
-# 3、切换 huawei 镜像源
-nrm use huawei
-# npm临时示例
-# npm install docsify-cli -g --registry=https://registry.npmmirror.com
-# 查看当前npm源
-npm config get registry
-# python临时示例
-# pip install httpie -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
-# 查看当前pip源
-pip config list
-# 全局配置git
-git config --global url."https://ghproxy.com/https://github.com/".insteadOf "https://github.com/"
-# 正常使用
-git clone https://github.com/HanamiSakiP/AI.git
-# 取消这个镜像
-git config --global --unset url."https://ghproxy.com/https://github.com/"
-# 临时使用
-# git clone https://ghproxy.com/https://github.com/HanamiSakiP/AI.git
-# 查看当前git源
-git config --global -l | grep insteadOf
-```
-
-</details>
-
   * [1. tool](assets/docs/AI/Linux/debian.md)
-  * [2. go AND pip](assets/docs/AI/Linux/go.md)
-  * [3. WebDAV](assets/docs/AI/Linux/webdav.md)
+  * [2. WebDAV](assets/docs/AI/Linux/webdav.md)
 
 <details>
 <summary></summary>

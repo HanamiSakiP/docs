@@ -275,11 +275,16 @@ sudo flatpak remote-modify flathub --url=国内镜像
 </details>
 
 <details>
-<summary>onlyoffice</summary>
+<summary>其他</summary>
 
 办公office
 ```bash
 sudo flatpak install flathub org.onlyoffice.desktopeditors
+```
+修复vlc打不开
+```bash
+vlc --reset-config
+vlc --reset-plugins-cache
 ```
 
 </details>

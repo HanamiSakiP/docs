@@ -53,54 +53,6 @@ git log
 
 </details>
 
-### 1. lang-install
-```bash
-curl -fsSL https://pyenv.run | bash
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash
-curl -sSL https://raw.githubusercontent.com/voidint/g/master/install.sh | bash
-```
-### 2. lang-config环境
-```bash
-# ~/.bashrc
-# pyenv
-echo 'export PYENV_ROOT="$HOME/.pyenv"' >~/.bashrc
-echo '[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"' >~/.bashrc
-echo 'eval "$(pyenv init - bash)"' >~/.bashrc
-cat << 'EOF' >~/.bashrc
-# Check if the alias 'g' exists before trying to unalias it
-if [[ -n $(alias g 2>/dev/null) ]]; then
-    unalias g
-fi
-# nvm
-export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm
-EOF
-source "$HOME/.g/env"
-exec "$SHELL"
-```
-### 3. lang-tool常用命令
-```bash
-pyenv install 3.10.4
-pyenv global 3.10.4
-pyenv shell 3.10.4
-# 1. 下载指定版本
-g install 1.25.1
-nvm install v18.20.8
-# 2. 设置版本
-g use 1.25.1
-nvm use v18.20.8
-# 设置当前目录
-pyenv local 3.10.4
-# 3. 查看已下载
-g ls
-mvm ls
-pyenv version
-# 4. 查询下载列表
-g ls-remote
-nvm list-remote
-pyenv install --list
-```
-
 ## git AND tmux
 
 ### git AND tmux install
@@ -292,8 +244,8 @@ ollama run qwen3.5:0.8b
 
 
 
-浏览器夜间插件
-[dark-background-light-text](https://addons.mozilla.org/firefox/addon/dark-background-light-text/)
+
+* [浏览器夜间插件](https://addons.mozilla.org/firefox/addon/dark-background-light-text/)
 ```text
 #ffffff
 #241f31
@@ -303,12 +255,4 @@ ollama run qwen3.5:0.8b
 #8080ff
 ```
 
-
-https://docs.nvidia.com/cuda/cuda-installation-guide-linux/
-
-## 修复vlc打不开
-### 重置配置和插件缓存（持久修复）
-```bash
-vlc --reset-config
-vlc --reset-plugins-cache
-```
+* [显卡驱动](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/)
