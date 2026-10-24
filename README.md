@@ -4,7 +4,7 @@
       <img src="assets/docs/images/M.jpg" width="200" alt="">
     </a>
     <br/>
-    CrazyThursdayVivo50
+    Documents
   </h1>
 </div>
 
@@ -13,52 +13,26 @@
 * start
 ```bash
 mkdir -p ~/.local/share/devmgr/backups
-cd ~/.local/share/devmgr
-git clone https://github.com/HanamiSakiP/AI.git
+git -C ~/.local/share/devmgr clone https://github.com/HanamiSakiP/AI.git
 ```
 ```bash
-cp -r ~/.local/share/devmgr/AI/dev/backups ~/.local/share/devmgr/
 mkdir -p ~/.local/bin
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+cp -r ~/.local/share/devmgr/AI/dev/backups ~/.local/share/devmgr/
 install -m755 ~/.local/share/devmgr/AI/dev/dev ~/.local/bin
 install -m755 ~/.local/share/devmgr/AI/dev/dev-tool ~/.local/bin
 install -m755 ~/.local/share/devmgr/AI/dev/tool ~/.local/bin
 install -m755 ~/.local/share/devmgr/AI/dev/undev ~/.local/bin
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
+install -m755 ~/.local/share/devmgr/AI/dev/doc ~/.local/bin
 dev restore # install
 dev-tool
-tool
-ls ~/.local/share/devmgr/backups
+source ~/.bashrc
 ```
 
 <details>
 <summary>test</summary>
 
-docker
-```bash
-# 最新版debian
-docker pull debian # podman同理
-# 精简版debian
-docker pull debian:trixie-slim # podman同理
-```
-docker
-```bash
-docker run -d --name test-debian debian:latest sleep infinity
-docker exec -it test-debian mkdir -p /root/.local/share/devmgr/AI
-docker cp ~/.local/share/devmgr/AI test-debian:/root/.local/share/devmgr/AI
-docker exec -it test-debian /bin/bash
-# 强制删除容器
-# docker rm -f test-debian
-```
-podman
-```bash
-podman run -d --name test-debian debian:latest sleep infinity
-podman exec -it test-debian mkdir -p /root/.local/share/devmgr/devmgr/AI
-podman cp ~/.local/share/devmgr/AI test-debian:/root/.local/share/devmgr/AI
-podman exec -it test-debian /bin/bash
-# 强制删除容器
-# podman rm -f test-debian
-```
 apt
 ```bash
 apt update

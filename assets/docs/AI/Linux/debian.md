@@ -34,20 +34,14 @@ gh repo list --limit 10 --json nameWithOwner --jq '.[].nameWithOwner' | xargs -L
 ### tmux
 ```bash
 # 创建会话和后台输出命令
-tmux new-session -d -s mcp_server
-tmux send-keys -t mcp_server "go run /path/mcp_server/." Enter
-tmux new-session -d -s a2a_server
-tmux send-keys -t mcp_server "go run /path/a2a_server/." Enter
-tmux new-session -d -s a2a_client
-tmux send-keys -t mcp_server "go run /path/a2a_client/." Enter
+tmux new-session -d -s name
+tmux send-keys -t name "mkdir demo" Enter
 # 查询会话
 tmux ls
 ```
 ```bash
 # 删除会话
-tmux kill-session -t mcp_server
-tmux kill-session -t a2a_server
-tmux kill-session -t a2a_client
+tmux kill-session -t name
 ```
 
 ### git
