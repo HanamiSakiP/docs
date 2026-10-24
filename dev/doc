@@ -1,0 +1,574 @@
+#!/usr/bin/env bash
+#
+# devdocker —— Docker/Podman 容器 & 镜像 & Compose 交互式小工具
+#
+# 安装：
+#   mkdir -p ~/.local/bin
+#   cp devdocker ~/.local/bin/devdocker
+#   chmod +x ~/.local/bin/devdocker
+#
+# 运行时自动检测：docker 优先，其次 podman
+# Compose 自动检测：docker compose → docker-compose → podman compose → podman-compose
+
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+  set -u
+fi
+
+# ---------------- 颜色 ----------------
+if [[ -t 1 ]]; then
+  RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'; CYAN=$'\033[36m'; BOLD=$'\033[1m'; NC=$'\033[0m'
+else
+  RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; NC=''
+fi
+
+have() { command -v "$1" >/dev/null 2>&1; }
+is_sourced() { [[ "${BASH_SOURCE[0]:-$0}" != "$0" ]]; }
+hr() { printf '%s\n' "${CYAN}------------------------------------------------------------${NC}"; }
+
+run() {
+  printf '%s+ %s%s\n' "$BLUE" "$*" "$NC"
+  "$@"
+}
+
+expand_tilde() {
+  local p="$1"
+  if [[ "$p" == "~" ]]; then
+    printf '%s' "$HOME"
+  elif [[ "$p" == "~/"* ]]; then
+    printf '%s' "${HOME}/${p#\~/}"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+# ---------------- 运行时 / Compose 检测 ----------------
+RT=""
+RT_NAME=""
+COMPOSE=()
+COMPOSE_NAME=""
+
+detect_runtime() {
+  RT=""; RT_NAME=""
+  if have docker; then
+    RT=docker; RT_NAME=docker
+  elif have podman; then
+    RT=podman; RT_NAME=podman
+  fi
+}
+
+detect_compose() {
+  COMPOSE=(); COMPOSE_NAME=""
+  if have docker && docker compose version >/dev/null 2>&1; then
+    COMPOSE=(docker compose);    COMPOSE_NAME="docker compose"
+  elif have docker-compose; then
+    COMPOSE=(docker-compose);    COMPOSE_NAME="docker-compose"
+  elif have podman && podman compose version >/dev/null 2>&1; then
+    COMPOSE=(podman compose);    COMPOSE_NAME="podman compose"
+  elif have podman-compose; then
+    COMPOSE=(podman-compose);    COMPOSE_NAME="podman-compose"
+  fi
+}
+
+install_hint() {
+  case "$1" in
+    docker)         echo "  docker         : https://docs.docker.com/engine/install/ （或 sudo apt install docker.io）" ;;
+    podman)         echo "  podman         : sudo apt install podman / sudo dnf install podman / brew install podman" ;;
+    docker-compose) echo "  docker-compose : sudo apt install docker-compose / pip install docker-compose" ;;
+    podman-compose) echo "  podman-compose : pip install podman-compose / sudo apt install podman-compose" ;;
+    *)              echo "  $1             : 请自行安装" ;;
+  esac
+}
+
+need_rt() {
+  if [[ -z "$RT" ]]; then
+    echo "${RED}✗ 未检测到 docker 或 podman${NC}"
+    install_hint docker
+    install_hint podman
+    return 1
+  fi
+  return 0
+}
+
+need_compose() {
+  if (( ${#COMPOSE[@]} == 0 )); then
+    echo "${RED}✗ 未检测到 compose 命令${NC}"
+    install_hint docker-compose
+    install_hint podman-compose
+    return 1
+  fi
+  return 0
+}
+
+preflight_check() {
+  detect_runtime
+  detect_compose
+  echo
+  if [[ -z "$RT" ]]; then
+    echo "${YELLOW}⚠ 未检测到 docker 或 podman，容器/镜像功能不可用${NC}"
+    install_hint docker
+    install_hint podman
+  else
+    echo "${GREEN}✓ 容器运行时: ${RT_NAME}${NC}"
+  fi
+  if (( ${#COMPOSE[@]} == 0 )); then
+    echo "${YELLOW}⚠ 未检测到 compose 命令，compose 功能不可用${NC}"
+    install_hint docker-compose
+    install_hint podman-compose
+  else
+    echo "${GREEN}✓ Compose 命令: ${COMPOSE_NAME}${NC}"
+  fi
+  echo
+}
+
+# ============================================================
+# 一、容器相关操作
+# ============================================================
+
+# 查看容器列表（运行中 / 含停止）
+do_ps() {
+  need_rt || return 1
+  local ans
+  read -r -p "是否包含已停止的容器 -a? [y/N]: " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    run "$RT" ps -a
+  else
+    run "$RT" ps
+  fi
+}
+
+# 创建容器并后台保活
+do_run_keepalive() {
+  need_rt || return 1
+  local name image ports envs p e
+  read -r -p "容器名（默认 test-debian）: " name
+  name=${name:-test-debian}
+  read -r -p "镜像（默认 debian:latest）: " image
+  image=${image:-debian:latest}
+  read -r -p "端口映射 -p（如 8080:80，多个用空格分隔，留空跳过）: " ports
+  read -r -p "环境变量 -e（如 KEY=VALUE，多个用空格分隔，留空跳过）: " envs
+
+  local -a cmd=("$RT" run -d --name "$name")
+  for p in $ports; do cmd+=(-p "$p"); done
+  for e in $envs;  do cmd+=(-e "$e"); done
+  cmd+=("$image" sleep infinity)
+
+  run "${cmd[@]}"
+}
+
+# 在容器中执行命令
+do_exec_cmd() {
+  need_rt || return 1
+  local cname cmdline
+  read -r -p "容器名/ID（默认 test-debian）: " cname
+  cname=${cname:-test-debian}
+  read -r -p "要执行的命令（默认 mkdir -p /root/.local/share/devmgr/AI）: " cmdline
+  cmdline=${cmdline:-mkdir -p /root/.local/share/devmgr/AI}
+  # 故意不加引号以支持多参数命令（如 mkdir -p /path）
+  # shellcheck disable=SC2086
+  run "$RT" exec -it "$cname" $cmdline
+}
+
+# 进入容器 shell
+do_exec_shell() {
+  need_rt || return 1
+  local cname shell
+  read -r -p "容器名/ID（默认 test-debian）: " cname
+  cname=${cname:-test-debian}
+  read -r -p "Shell（默认 /bin/bash，失败自动尝试 /bin/sh）: " shell
+  shell=${shell:-/bin/bash}
+  if ! run "$RT" exec -it "$cname" "$shell"; then
+    if [[ "$shell" != "/bin/sh" ]]; then
+      echo "${YELLOW}尝试 /bin/sh ...${NC}"
+      run "$RT" exec -it "$cname" /bin/sh
+    fi
+  fi
+}
+
+# 本地 ↔ 容器复制文件
+do_cp() {
+  need_rt || return 1
+  local dir lpath cpath
+  echo "  1) 本地 → 容器"
+  echo "  2) 容器 → 本地"
+  read -r -p "方向 [1/2]（默认 1）: " dir
+  dir=${dir:-1}
+
+  read -r -p "本地路径（默认 ~/.local/share/devmgr/AI）: " lpath
+  lpath=${lpath:-~/.local/share/devmgr/AI}
+  lpath=$(expand_tilde "$lpath")
+
+  read -r -p "容器侧路径（默认 test-debian:/root/.local/share/devmgr/AI）: " cpath
+  cpath=${cpath:-test-debian:/root/.local/share/devmgr/AI}
+
+  if [[ "$dir" == "2" ]]; then
+    run "$RT" cp "$cpath" "$lpath"
+  else
+    run "$RT" cp "$lpath" "$cpath"
+  fi
+}
+
+# 删除容器
+do_rm_force() {
+  need_rt || return 1
+  local names ans
+  read -r -p "容器名/ID（多个用空格分隔）: " names
+  [[ -z "$names" ]] && return 0
+  read -r -p "强制删除 -f? [Y/n]: " ans
+  if [[ "$ans" =~ ^[Nn]$ ]]; then
+    run "$RT" rm $names
+  else
+    run "$RT" rm -f $names
+  fi
+}
+
+do_start() {
+  need_rt || return 1
+  local names
+  read -r -p "容器名/ID（多个用空格分隔）: " names
+  [[ -z "$names" ]] && return 0
+  run "$RT" start $names
+}
+
+do_stop() {
+  need_rt || return 1
+  local names
+  read -r -p "容器名/ID（多个用空格分隔）: " names
+  [[ -z "$names" ]] && return 0
+  run "$RT" stop $names
+}
+
+do_restart() {
+  need_rt || return 1
+  local names
+  read -r -p "容器名/ID（多个用空格分隔）: " names
+  [[ -z "$names" ]] && return 0
+  run "$RT" restart $names
+}
+
+do_network_ls() {
+  need_rt || return 1
+  run "$RT" network ls
+}
+
+do_network_inspect() {
+  need_rt || return 1
+  local net
+  read -r -p "网络名/ID: " net
+  [[ -z "$net" ]] && return 0
+  run "$RT" network inspect "$net"
+}
+
+do_logs() {
+  need_rt || return 1
+  local cname ans
+  read -r -p "容器名/ID: " cname
+  [[ -z "$cname" ]] && return 0
+  read -r -p "实时跟踪 -f? [y/N]: " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    run "$RT" logs -f "$cname"
+  else
+    run "$RT" logs "$cname"
+  fi
+}
+
+do_top() {
+  need_rt || return 1
+  local cname
+  read -r -p "容器名/ID: " cname
+  [[ -z "$cname" ]] && return 0
+  run "$RT" top "$cname"
+}
+
+# ============================================================
+# 二、镜像相关操作
+# ============================================================
+
+do_build() {
+  need_rt || return 1
+  local tag ctx
+  read -r -p "镜像名:标签（如 myapp:v1）: " tag
+  [[ -z "$tag" ]] && return 0
+  read -r -p "构建上下文 / Dockerfile 路径（默认 .）: " ctx
+  ctx=${ctx:-.}
+  ctx=$(expand_tilde "$ctx")
+  run "$RT" build -t "$tag" "$ctx"
+}
+
+do_pull() {
+  need_rt || return 1
+  local image
+  read -r -p "镜像名:标签: " image
+  [[ -z "$image" ]] && return 0
+  run "$RT" pull "$image"
+}
+
+do_push() {
+  need_rt || return 1
+  local image
+  read -r -p "镜像名:标签: " image
+  [[ -z "$image" ]] && return 0
+  run "$RT" push "$image"
+}
+
+do_images() {
+  need_rt || return 1
+  run "$RT" images
+}
+
+do_rmi() {
+  need_rt || return 1
+  local images ans
+  read -r -p "镜像ID/名称（多个用空格分隔）: " images
+  [[ -z "$images" ]] && return 0
+  read -r -p "强制删除 -f? [y/N]: " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    run "$RT" rmi -f $images
+  else
+    run "$RT" rmi $images
+  fi
+}
+
+do_save() {
+  need_rt || return 1
+  local image file
+  read -r -p "镜像名:标签: " image
+  [[ -z "$image" ]] && return 0
+  read -r -p "保存文件名（留空 = <image>.tar）: " file
+  if [[ -z "$file" ]]; then
+    file="${image//[:\/]/-}.tar"
+  fi
+  file=$(expand_tilde "$file")
+  run "$RT" save -o "$file" "$image"
+}
+
+do_load() {
+  need_rt || return 1
+  local file
+  read -r -p "tar 文件路径: " file
+  [[ -z "$file" ]] && return 0
+  file=$(expand_tilde "$file")
+  run "$RT" load -i "$file"
+}
+
+# ============================================================
+# 三、Compose 相关操作
+# ============================================================
+
+do_compose_start() {
+  need_compose || return 1
+  run "${COMPOSE[@]}" start
+}
+
+do_compose_stop() {
+  need_compose || return 1
+  run "${COMPOSE[@]}" stop
+}
+
+do_compose_restart() {
+  need_compose || return 1
+  run "${COMPOSE[@]}" restart
+}
+
+do_compose_up() {
+  need_compose || return 1
+  local mode
+  echo "  1) 后台运行 -d"
+  echo "  2) 前台运行（阻塞日志）"
+  echo "  3) -d --force-recreate（强制重建）"
+  echo "  4) -d --no-recreate（仅重建变化的）"
+  read -r -p "请选择（默认 1）: " mode
+  mode=${mode:-1}
+  case "$mode" in
+    2) run "${COMPOSE[@]}" up ;;
+    3) run "${COMPOSE[@]}" up -d --force-recreate ;;
+    4) run "${COMPOSE[@]}" up -d --no-recreate ;;
+    *) run "${COMPOSE[@]}" up -d ;;
+  esac
+}
+
+do_compose_down() {
+  need_compose || return 1
+  run "${COMPOSE[@]}" down
+}
+
+do_compose_ps() {
+  need_compose || return 1
+  run "${COMPOSE[@]}" ps
+}
+
+do_compose_rm() {
+  need_compose || return 1
+  local ans
+  read -r -p "强制删除 -f? [y/N]: " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    run "${COMPOSE[@]}" rm -f
+  else
+    run "${COMPOSE[@]}" rm
+  fi
+}
+
+do_compose_network_ls() {
+  need_compose || return 1
+  run "${COMPOSE[@]}" network ls
+}
+
+do_compose_logs() {
+  need_compose || return 1
+  local svc ans
+  read -r -p "服务名（留空 = 全部服务）: " svc
+  read -r -p "实时跟踪 -f? [y/N]: " ans
+  local -a cmd=("${COMPOSE[@]}" logs)
+  [[ -n "$svc" ]] && cmd+=("$svc")
+  [[ "$ans" =~ ^[Yy]$ ]] && cmd+=(-f)
+  run "${cmd[@]}"
+}
+
+# ============================================================
+# 菜单
+# ============================================================
+
+container_menu() {
+  while true; do
+    echo; hr
+    echo "${BOLD}容器操作（运行时: ${RT_NAME:-未检测到}）${NC}"
+    hr
+    echo "${RED}  1) 查看容器列表（运行中 / 含已停止，可选 -a）${NC}"
+    echo "${RED}  2) 创建容器并后台保活       (run -d ... sleep infinity)${NC}"
+    echo "${RED}  3) 在容器中执行命令         (exec -it <name> <cmd>)${NC}"
+    echo "${RED}  4) 进入容器 shell           (exec -it <name> bash/sh)${NC}"
+    echo "${RED}  5) 复制文件（本地 ↔ 容器）  (cp)${NC}"
+    echo "  6) 删除容器                 (rm / rm -f)"
+    echo "  7) 启动容器                 (start)"
+    echo "  8) 停止容器                 (stop)"
+    echo "  9) 重启容器                 (restart)"
+    echo "  10) 查看网络列表            (network ls)"
+    echo "  11) 查看网络详情            (network inspect)"
+    echo "  12) 查看容器日志            (logs / logs -f)"
+    echo "  13) 查看容器进程            (top)"
+    echo
+    echo "  0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) do_ps ;;
+      2) do_run_keepalive ;;
+      3) do_exec_cmd ;;
+      4) do_exec_shell ;;
+      5) do_cp ;;
+      6) do_rm_force ;;
+      7) do_start ;;
+      8) do_stop ;;
+      9) do_restart ;;
+      10) do_network_ls ;;
+      11) do_network_inspect ;;
+      12) do_logs ;;
+      13) do_top ;;
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
+}
+
+image_menu() {
+  while true; do
+    echo; hr
+    echo "${BOLD}镜像操作（运行时: ${RT_NAME:-未检测到}）${NC}"
+    hr
+    echo "  1) 构建镜像                 (build -t <tag> <ctx>)"
+    echo "  2) 拉取镜像                 (pull <image>)"
+    echo "  3) 推送镜像                 (push <image>)"
+    echo "  4) 列出镜像                 (images)"
+    echo "  5) 删除镜像                 (rmi / rmi -f)"
+    echo "  6) 保存镜像为 tar           (save -o <file.tar> <image>)"
+    echo "  7) 从 tar 加载镜像          (load -i <file.tar>)"
+    echo
+    echo "  0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) do_build ;;
+      2) do_pull ;;
+      3) do_push ;;
+      4) do_images ;;
+      5) do_rmi ;;
+      6) do_save ;;
+      7) do_load ;;
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
+}
+
+compose_menu() {
+  while true; do
+    echo; hr
+    echo "${BOLD}Compose 操作（命令: ${COMPOSE_NAME:-未检测到}）${NC}"
+    echo "${YELLOW}提示：请在包含 compose 文件的目录中执行${NC}"
+    hr
+    echo "  1) 启动服务                 (start)"
+    echo "  2) 停止服务                 (stop)"
+    echo "  3) 重启服务                 (restart)"
+    echo "  4) 启动所有服务             (up / -d / --force-recreate / --no-recreate)"
+    echo "  5) 停止并移除资源           (down)"
+    echo "  6) 查看运行中的服务         (ps)"
+    echo "  7) 删除容器                 (rm / rm -f)"
+    echo "  8) 查看服务网络             (network ls)"
+    echo "  9) 查看服务日志             (logs [service] [-f])"
+    echo
+    echo "  0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) do_compose_start ;;
+      2) do_compose_stop ;;
+      3) do_compose_restart ;;
+      4) do_compose_up ;;
+      5) do_compose_down ;;
+      6) do_compose_ps ;;
+      7) do_compose_rm ;;
+      8) do_compose_network_ls ;;
+      9) do_compose_logs ;;
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
+}
+
+main_menu() {
+  while true; do
+    echo; hr
+    echo "${BOLD}Docker/Podman 开发工具箱${NC}"
+    hr
+    echo "  运行时: ${GREEN}${RT_NAME:-未检测到}${NC}    Compose: ${GREEN}${COMPOSE_NAME:-未检测到}${NC}"
+    hr
+    echo "1) 容器操作  (ps / run / exec / cp / rm / start / stop / restart / network / logs / top)"
+    echo "2) 镜像操作  (build / pull / push / images / rmi / save / load)"
+    echo "3) Compose 操作  (start / stop / restart / up / down / ps / rm / logs)"
+    echo "4) 重新检测运行时和 Compose 命令"
+    echo "0) 退出"
+    read -r -p "请选择: " choice
+    case "$choice" in
+      1) container_menu ;;
+      2) image_menu ;;
+      3) compose_menu ;;
+      4) preflight_check ;;
+      0|q|Q)
+        echo "Bye."
+        if is_sourced; then
+          return 0
+        else
+          exit 0
+        fi
+        ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+  done
+}
+
+# ---------------- 入口 ----------------
+preflight_check
+main_menu

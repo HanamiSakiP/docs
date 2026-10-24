@@ -186,6 +186,8 @@ do_node() {
     run_npm_install @earendil-works/pi-coding-agent
     run_npm_install @anthropic-ai/claude-code
     run_npm_install @deepseek-ai/dsh
+    run_npm_install @deepseek-harness-tui/dsh-tui
+    run_try dsh plugin --profile web add -w @xmanrui/dsh-im
     run_try dsh plugin --profile web add dsh-pet
     run_npm_install rea-agents
     run_npm_install @opencode/cli

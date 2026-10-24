@@ -2,75 +2,62 @@
 
 ### docker配置相关
 1. **tar.gz文件** - 解压单个
-   ```bash
-   tar -zxvf 压缩文件名.tar.gz
-   ```
-   例子:
-   ```bash
-   tar -zxvf Debian_docker.tar_amd64.gz
-   ```
-   
-
-2. **tar.gz文件** - 解压所有
-   ```bash
-   for tar in *.tar.gz;  do tar xvf $tar; done
-   ```
-
+```bash
+tar -zxvf 压缩文件名.tar.gz
+```
+例子:
+```bash
+tar -zxvf Debian_docker.tar_amd64.gz
+```
+2. **tar.gz文件** - 解压所有.tar.gz压缩包
+```bash
+for tar in *.tar.gz;  do tar xvf $tar; done
+```
 3. **dpkg包管理** - 安装所有deb文件
-   ```bash
-   sudo dpkg -i *.deb
-   ```
+```bash
+sudo dpkg -i *.deb
+```
 
 4. **docker配置1** - 创建目录(需要再配置)
-   ```bash
-   sudo mkdir -p /etc/docker
-   ```
-
-5. **docker配置2** - 拷贝配置文件
-   ```bash
-   sudo cp /路径 /etc/docker
-   ```
-   例子:(需要将docker停止)
-   ```bash
-   sudo service docker stop
-   ```
-   ```bash
-   sudo cp /下载/daemon.json /etc/docker
-   ```
-
-6. **docker配置3** - 镜像源及存储路径(做了配置2可跳过) 
-   ```json
-   sudo tee /etc/docker/daemon.json <<EOF
-   {
-     "registry-mirrors": [
-    "https://docker.zhai.cm",
-    "https://a.ussh.net",
-    "https://hub.rat.dev",
-    "https://func.ink",
-    "https://lispy.org"],
-   "data-root": "/new/location/docker"
-   }
-   EOF
 ```bash
-sudo service docker start
-   ```
+mkdir -p /etc/docker
+cp ~/.local/share/devmgr/AI/dev/tools/docker/daemon.json /etc/docker
+```
+```bash
+# 重启后生效
+sudo service docker restart # start / stop
+```
 
+<details>
+<summary>docker镜像源及存储路径json配置</summary>
+
+* 3个镜像源
+* 默认储存路径 /new/docker 
+```daemon.json
+{
+	"registry-mirrors": [
+	"https://docker.xuanyuan.me",
+	"https://docker.1ms.run",
+	"https://hub.rat.dev"],
+	"data-root": "/new/docker"
+}
+```
+
+</details>
 
 ### docker权限和所有
-1. **docker保存镜像** - docker save
-   ```bash
-   docker save -o <指定文件名称.tar> <镜像名称>
-   ```
-
-2. **docker读取镜像** - docker load
-   ```bash
-   docker load -i <载入文件名称.tar>
-   ```
-
+1. **docker保存打包镜像** - docker save
+```bash
+docker save -o <指定文件名称.tar> <镜像名称>
+```
+2. **docker读取打包镜像** - docker load
+```bash
+docker load -i <载入文件名称.tar>
+```
 3. **docker拷贝文件** - 容器内拷贝到本机
-   ```bash
-   docker cp <容器ID或名称>:<容器路径> <本地文件路径>
-   ```
+```bash
+docker cp <容器ID或名称>:<容器路径> <本地文件路径>
+```
 
 ### 文件和目录操作
 1. **ls** - 列出目录内容

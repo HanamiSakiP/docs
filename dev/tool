@@ -638,16 +638,14 @@ do_create_git_project() {
   fi
 }
 
-# ---------------- 8. gh 查看 / 下载 Release ----------------
-do_gh_release_menu() {
-  need_tools git gh || return 1
+# ---------------- 8. gh 仓库 / 星标 / Release 管理 ----------------
 
-  # 默认使用 --repo：进入时先确定目标仓库
+# 询问目标仓库（优先当前仓库），结果写到 stdout
+ask_gh_repo() {
   local repo="" input
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
   fi
-
   if [[ -n "$repo" ]]; then
     read -r -p "目标仓库 [默认 ${repo}，回车沿用当前仓库]: " input
     [[ -n "$input" ]] && repo="$input"
@@ -655,145 +653,213 @@ do_gh_release_menu() {
     read -r -p "目标仓库（owner/repo，必填）: " input
     repo="$input"
   fi
+  printf '%s' "$repo"
+}
 
-  if [[ -z "$repo" ]]; then
-    echo "${RED}未指定仓库，无法继续${NC}"
-    return 1
+# 查看自己（或指定用户）的仓库列表
+do_gh_repo_list() {
+  need_tools gh || return 1
+  local user limit
+  local -a cmd=(gh repo list)
+  read -r -p "用户名（留空 = 你自己）: " user
+  read -r -p "数量上限（0 = 全部，默认 30）: " limit
+  limit=${limit:-30}
+  [[ -n "$user" ]] && cmd+=("$user")
+  cmd+=(--limit "$limit")
+  echo "${CYAN}>>> ${cmd[*]}${NC}"
+  "${cmd[@]}" || true
+}
+
+# 查看已星标集合（GitHub Lists）名称
+do_gh_starred_lists() {
+  need_tools gh || return 1
+  local q='{ viewer { lists(first: 100) { nodes { name } } } }'
+  local jq='.data.viewer.lists.nodes[].name'
+  echo "${CYAN}>>> gh api graphql -f query='${q}' --jq '${jq}'${NC}"
+  gh api graphql -f query="$q" --jq "$jq" || true
+}
+
+# 查看某个星标集合里的项目
+do_gh_starred_list_items() {
+  need_tools gh || return 1
+  local list jq
+  read -r -p "星标集合名称（如 game）: " list
+  [[ -z "$list" ]] && return 0
+
+  local q='
+query {
+  viewer {
+    lists(first: 100) {
+      nodes {
+        name
+        items(first: 100) {
+          nodes {
+            ... on Repository {
+              nameWithOwner
+            }
+          }
+        }
+      }
+    }
+  }
+}'
+  jq=".data.viewer.lists.nodes[] | select(.name == \"${list}\") | .items.nodes[].nameWithOwner"
+  echo "${CYAN}>>> gh api graphql -f query='{...}' --jq \"${jq}\"${NC}"
+  gh api graphql -f query="$q" --jq "$jq" || true
+}
+
+# --- Release 管理 ---
+
+do_gh_release_list() {
+  need_tools git gh || return 1
+  local repo
+  repo=$(ask_gh_repo)
+  [[ -z "$repo" ]] && return 1
+  local cmd=(gh release list -R "$repo")
+  echo "${CYAN}>>> ${cmd[*]}${NC}"
+  "${cmd[@]}" || true
+}
+
+do_gh_release_view() {
+  need_tools git gh || return 1
+  local repo tag ans cmd
+  repo=$(ask_gh_repo)
+  [[ -z "$repo" ]] && return 1
+  read -r -p "Tag（留空 = 最新 Release）: " tag
+  cmd=(gh release view)
+  [[ -n "$tag" ]] && cmd+=("$tag")
+  cmd+=(-R "$repo")
+  echo "${CYAN}>>> ${cmd[*]}${NC}"
+  "${cmd[@]}" || true
+
+  read -r -p "是否在浏览器中打开? [y/N]: " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    cmd+=(--web)
+    echo "${CYAN}>>> ${cmd[*]}${NC}"
+    "${cmd[@]}" || true
+  fi
+}
+
+do_gh_release_download() {
+  need_tools git gh || return 1
+  local repo tag dir clobber use_pattern pattern cmd dl_dir view_tag assets_raw asset
+  local -a expected_assets=()
+  repo=$(ask_gh_repo)
+  [[ -z "$repo" ]] && return 1
+
+  read -r -p "Tag（留空 = 最新 Release）: " tag
+  read -r -p "是否按文件名筛选资产（--pattern）? [y/N]: " use_pattern
+  pattern=""
+  if [[ "$use_pattern" =~ ^[Yy]$ ]]; then
+    read -r -p "文件名 glob 模式（如 *.tar.gz，直接回车 = 全部资产）: " pattern
+  fi
+  read -r -p "下载目录（默认当前目录）: " dir
+  read -r -p "覆盖已存在文件（--clobber）? [y/N]: " clobber
+
+  cmd=(gh release download)
+  [[ -n "$tag" ]] && cmd+=("$tag")
+
+  if [[ -n "$pattern" ]]; then
+    cmd+=(--pattern "$pattern")
+  elif [[ -z "$tag" ]]; then
+    cmd+=(--pattern '*')
+    echo "${YELLOW}提示：下载最新 Release 时 gh 要求必须指定 --pattern，已自动使用 '*'（匹配全部资产）${NC}"
   fi
 
-  local repo_opt=(-R "$repo")
+  [[ -n "$dir" ]] && cmd+=(--dir "$dir")
+  [[ "$clobber" =~ ^[Yy]$ ]] && cmd+=(--clobber)
+  cmd+=(-R "$repo")
 
+  dl_dir="${dir:-.}"
+  view_tag="$tag"
+  if [[ -z "$view_tag" ]]; then
+    view_tag=$(gh release view -R "$repo" --json tagName -q .tagName 2>/dev/null || true)
+  fi
+  if [[ -n "$view_tag" ]]; then
+    assets_raw=$(gh release view "$view_tag" -R "$repo" --json assets -q '.assets[].name' 2>/dev/null || true)
+    if [[ -n "$assets_raw" ]]; then
+      while IFS= read -r asset; do
+        [[ -z "$asset" ]] && continue
+        if [[ -n "$pattern" ]]; then
+          # shellcheck disable=SC2053
+          if [[ "$asset" == $pattern ]]; then
+            expected_assets+=("$asset")
+          fi
+        else
+          expected_assets+=("$asset")
+        fi
+      done <<< "$assets_raw"
+    fi
+  fi
+
+  echo "${CYAN}>>> ${cmd[*]}${NC}"
+  if "${cmd[@]}"; then
+    echo
+    echo "${GREEN}✓✓✓ 下载成功 ✓✓✓${NC}"
+    local abs_dir
+    abs_dir=$(cd "$dl_dir" 2>/dev/null && pwd) || abs_dir="$dl_dir"
+    echo "下载目录: ${abs_dir}"
+    echo "本次下载文件:"
+    local found_any=0
+    if (( ${#expected_assets[@]} > 0 )); then
+      local f line
+      for asset in "${expected_assets[@]}"; do
+        f="${dl_dir}/${asset}"
+        if [[ -f "$f" ]]; then
+          while IFS= read -r line; do
+            printf '%s%s%s\n' "${RED}" "$line" "${NC}"
+          done < <(ls -lh "$f")
+          found_any=1
+        fi
+      done
+    fi
+    if (( found_any == 0 )); then
+      if [[ -n "$pattern" ]]; then
+        while IFS= read -r f; do
+          [[ -z "$f" ]] && continue
+          while IFS= read -r line; do
+            printf '%s%s%s\n' "${RED}" "$line" "${NC}"
+          done < <(ls -lh "$f")
+        done < <(find "$dl_dir" -maxdepth 1 -type f -name "$pattern" 2>/dev/null)
+      else
+        while IFS= read -r line; do
+          printf '%s%s%s\n' "${RED}" "$line" "${NC}"
+        done < <(ls -lh "$dl_dir" 2>/dev/null)
+      fi
+    fi
+  else
+    echo
+    echo "${RED}✗✗✗ 下载失败！${NC}"
+    echo "${YELLOW}请检查：Tag 是否存在 / pattern 是否匹配 / 网络与权限${NC}"
+  fi
+}
+
+do_gh_repo_menu() {
+  need_tools git gh || return 1
   while true; do
     echo
     hr
-    echo "${BOLD}gh Release 管理${NC}"
-    echo "${CYAN}目标仓库: ${repo}（--repo ${repo}）${NC}"
+    echo "${BOLD}gh 仓库 / 星标 / Release 管理${NC}"
     hr
-    echo "  1) 列出所有 Release"
-    echo "  2) 查看 Release 详情"
-    echo "  3) 下载 Release 资产"
+    echo "${CYAN}--- 仓库列表 ---${NC}"
+    echo "  1) 查看自己的仓库列表              (gh repo list)"
+    echo "  2) 查看已星标集合（Lists）名称"
+    echo "  3) 查看星标集合内的项目"
+    echo
+    echo "${CYAN}--- Release 管理（需指定仓库）---${NC}"
+    echo "  4) 列出所有 Release"
+    echo "  5) 查看 Release 详情"
+    echo "  6) 下载 Release 资产"
+    echo
     echo "  0) 返回上级"
     read -r -p "请选择: " c
-
     case "$c" in
-      1)
-        local cmd=(gh release list "${repo_opt[@]}")
-        echo "${CYAN}>>> ${cmd[*]}${NC}"
-        "${cmd[@]}" || true
-        ;;
-
-      2)
-        local tag ans cmd
-        read -r -p "Tag（留空 = 最新 Release）: " tag
-        cmd=(gh release view)
-        [[ -n "$tag" ]] && cmd+=("$tag")
-        cmd+=("${repo_opt[@]}")
-        echo "${CYAN}>>> ${cmd[*]}${NC}"
-        "${cmd[@]}" || true
-
-        read -r -p "是否在浏览器中打开? [y/N]: " ans
-        if [[ "$ans" =~ ^[Yy]$ ]]; then
-          cmd+=(--web)
-          echo "${CYAN}>>> ${cmd[*]}${NC}"
-          "${cmd[@]}" || true
-        fi
-        ;;
-
-      3)
-        local tag dir clobber use_pattern pattern cmd
-        read -r -p "Tag（留空 = 最新 Release）: " tag
-        read -r -p "是否按文件名筛选资产（--pattern）? [y/N]: " use_pattern
-        pattern=""
-        if [[ "$use_pattern" =~ ^[Yy]$ ]]; then
-          read -r -p "文件名 glob 模式（如 *.tar.gz，直接回车 = 全部资产）: " pattern
-        fi
-        read -r -p "下载目录（默认当前目录）: " dir
-        read -r -p "覆盖已存在文件（--clobber）? [y/N]: " clobber
-
-        cmd=(gh release download)
-        [[ -n "$tag" ]] && cmd+=("$tag")
-
-        if [[ -n "$pattern" ]]; then
-          cmd+=(--pattern "$pattern")
-        elif [[ -z "$tag" ]]; then
-          # gh 限制：下载最新 Release 时必须指定 --pattern 或 --archive
-          # 用 '*' 匹配全部资产，等价于「不筛选、下载全部」
-          cmd+=(--pattern '*')
-          echo "${YELLOW}提示：下载最新 Release 时 gh 要求必须指定 --pattern，已自动使用 '*'（匹配全部资产）${NC}"
-        fi
-
-        [[ -n "$dir" ]] && cmd+=(--dir "$dir")
-        [[ "$clobber" =~ ^[Yy]$ ]] && cmd+=(--clobber)
-        cmd+=("${repo_opt[@]}")
-
-        local dl_dir="${dir:-.}"
-        local -a expected_assets=()
-        local view_tag="$tag"
-        if [[ -z "$view_tag" ]]; then
-          view_tag=$(gh release view "${repo_opt[@]}" --json tagName -q .tagName 2>/dev/null || true)
-        fi
-        if [[ -n "$view_tag" ]]; then
-          local assets_raw
-          assets_raw=$(gh release view "$view_tag" "${repo_opt[@]}" --json assets -q '.assets[].name' 2>/dev/null || true)
-          if [[ -n "$assets_raw" ]]; then
-            while IFS= read -r asset; do
-              [[ -z "$asset" ]] && continue
-              if [[ -n "$pattern" ]]; then
-                # 使用 glob 匹配资产名
-                # shellcheck disable=SC2053
-                if [[ "$asset" == $pattern ]]; then
-                  expected_assets+=("$asset")
-                fi
-              else
-                expected_assets+=("$asset")
-              fi
-            done <<< "$assets_raw"
-          fi
-        fi
-
-        echo "${CYAN}>>> ${cmd[*]}${NC}"
-        if "${cmd[@]}"; then
-          echo
-          echo "${GREEN}✓✓✓ 下载成功 ✓✓✓${NC}"
-          local abs_dir
-          abs_dir=$(cd "$dl_dir" 2>/dev/null && pwd) || abs_dir="$dl_dir"
-          echo "下载目录: ${abs_dir}"
-          echo "本次下载文件:"
-          local found_any=0
-          if (( ${#expected_assets[@]} > 0 )); then
-            local asset f line
-            for asset in "${expected_assets[@]}"; do
-              f="${dl_dir}/${asset}"
-              if [[ -f "$f" ]]; then
-                while IFS= read -r line; do
-                  printf '%s%s%s\n' "${RED}" "$line" "${NC}"
-                done < <(ls -lh "$f")
-                found_any=1
-              fi
-            done
-          fi
-          if (( found_any == 0 )); then
-            # 回退：无法获取资产列表时，按 pattern 匹配下载目录中的文件
-            if [[ -n "$pattern" ]]; then
-              while IFS= read -r f; do
-                [[ -z "$f" ]] && continue
-                while IFS= read -r line; do
-                  printf '%s%s%s\n' "${RED}" "$line" "${NC}"
-                done < <(ls -lh "$f")
-              done < <(find "$dl_dir" -maxdepth 1 -type f -name "$pattern" 2>/dev/null)
-            else
-              while IFS= read -r line; do
-                printf '%s%s%s\n' "${RED}" "$line" "${NC}"
-              done < <(ls -lh "$dl_dir" 2>/dev/null)
-            fi
-          fi
-        else
-          echo
-          echo "${RED}✗✗✗ 下载失败！${NC}"
-          echo "${YELLOW}请检查：Tag 是否存在 / pattern 是否匹配 / 网络与权限${NC}"
-        fi
-        ;;
-
+      1) do_gh_repo_list ;;
+      2) do_gh_starred_lists ;;
+      3) do_gh_starred_list_items ;;
+      4) do_gh_release_list ;;
+      5) do_gh_release_view ;;
+      6) do_gh_release_download ;;
       0|q|Q) return 0 ;;
       *) echo "${RED}无效选项${NC}" ;;
     esac
@@ -1044,7 +1110,7 @@ main_menu() {
     echo "4) AI 工具介绍  (dsh / rea-agents)"
     echo "${RED}5) 快速找到所有 git 项目并跳转  (fzf)${NC}"
     echo "${RED}6) 快速创建 git 项目并跳转  (~/.local/share/devmgr/<name>)${NC}"
-    echo "${RED}7) gh 查看 / 下载 Release${NC}"
+    echo "${RED}7) gh 仓库列表 / 星标集合 / Release 管理${NC}"
     echo "${RED}8) rclone / restic 快捷操作  (config / list / copy / sync / snapshots / restore / backup)${NC}"
     echo "9) 全部检查（1 + 2）"
     echo "0) 退出"
@@ -1056,7 +1122,7 @@ main_menu() {
       4) ai_tools_intro ;;
       5) do_find_git_projects ;;
       6) do_create_git_project ;;
-      7) do_gh_release_menu ;;
+      7) do_gh_repo_menu ;;
       8) rclone_restic_menu ;;
       9) check_git_auth; echo; check_ai_auth ;;
       0|q|Q)
