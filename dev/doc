@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# devdocker —— Docker/Podman 容器 & 镜像 & Compose 交互式小工具
+# devdocker —— Docker/Podman 容器 & 镜像 & Compose & tmux & ollama 交互式工具箱
 #
 # 安装：
 #   mkdir -p ~/.local/bin
@@ -9,6 +9,7 @@
 #
 # 运行时自动检测：docker 优先，其次 podman
 # Compose 自动检测：docker compose → docker-compose → podman compose → podman-compose
+# tmux / ollama 自动检测（可选）
 
 if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
   set -u
@@ -42,11 +43,13 @@ expand_tilde() {
   fi
 }
 
-# ---------------- 运行时 / Compose 检测 ----------------
+# ---------------- 运行时 / Compose / 外部工具检测 ----------------
 RT=""
 RT_NAME=""
 COMPOSE=()
 COMPOSE_NAME=""
+TMUX_OK=""
+OLLAMA_OK=""
 
 detect_runtime() {
   RT=""; RT_NAME=""
@@ -70,12 +73,20 @@ detect_compose() {
   fi
 }
 
+detect_extras() {
+  TMUX_OK=""; OLLAMA_OK=""
+  have tmux   && TMUX_OK=tmux
+  have ollama && OLLAMA_OK=ollama
+}
+
 install_hint() {
   case "$1" in
     docker)         echo "  docker         : https://docs.docker.com/engine/install/ （或 sudo apt install docker.io）" ;;
     podman)         echo "  podman         : sudo apt install podman / sudo dnf install podman / brew install podman" ;;
     docker-compose) echo "  docker-compose : sudo apt install docker-compose / pip install docker-compose" ;;
     podman-compose) echo "  podman-compose : pip install podman-compose / sudo apt install podman-compose" ;;
+    tmux)           echo "  tmux           : sudo apt install tmux / sudo dnf install tmux / brew install tmux" ;;
+    ollama)         echo "  ollama         : curl -fsSL https://ollama.com/install.sh | sh （参考 https://ollama.com/download）" ;;
     *)              echo "  $1             : 请自行安装" ;;
   esac
 }
@@ -103,6 +114,7 @@ need_compose() {
 preflight_check() {
   detect_runtime
   detect_compose
+  detect_extras
   echo
   if [[ -z "$RT" ]]; then
     echo "${YELLOW}⚠ 未检测到 docker 或 podman，容器/镜像功能不可用${NC}"
@@ -118,6 +130,18 @@ preflight_check() {
   else
     echo "${GREEN}✓ Compose 命令: ${COMPOSE_NAME}${NC}"
   fi
+  if [[ -z "$TMUX_OK" ]]; then
+    echo "${YELLOW}⚠ 未检测到 tmux，tmux 功能不可用${NC}"
+    install_hint tmux
+  else
+    echo "${GREEN}✓ tmux: ${TMUX_OK}${NC}"
+  fi
+  if [[ -z "$OLLAMA_OK" ]]; then
+    echo "${YELLOW}⚠ 未检测到 ollama，ollama 功能不可用${NC}"
+    install_hint ollama
+  else
+    echo "${GREEN}✓ ollama: ${OLLAMA_OK}${NC}"
+  fi
   echo
 }
 
@@ -125,7 +149,6 @@ preflight_check() {
 # 一、容器相关操作
 # ============================================================
 
-# 查看容器列表（运行中 / 含停止）
 do_ps() {
   need_rt || return 1
   local ans
@@ -137,7 +160,6 @@ do_ps() {
   fi
 }
 
-# 创建容器并后台保活
 do_run_keepalive() {
   need_rt || return 1
   local name image ports envs p e
@@ -156,7 +178,6 @@ do_run_keepalive() {
   run "${cmd[@]}"
 }
 
-# 在容器中执行命令
 do_exec_cmd() {
   need_rt || return 1
   local cname cmdline
@@ -164,12 +185,10 @@ do_exec_cmd() {
   cname=${cname:-test-debian}
   read -r -p "要执行的命令（默认 mkdir -p /root/.local/share/devmgr/AI）: " cmdline
   cmdline=${cmdline:-mkdir -p /root/.local/share/devmgr/AI}
-  # 故意不加引号以支持多参数命令（如 mkdir -p /path）
   # shellcheck disable=SC2086
   run "$RT" exec -it "$cname" $cmdline
 }
 
-# 进入容器 shell
 do_exec_shell() {
   need_rt || return 1
   local cname shell
@@ -185,7 +204,6 @@ do_exec_shell() {
   fi
 }
 
-# 本地 ↔ 容器复制文件
 do_cp() {
   need_rt || return 1
   local dir lpath cpath
@@ -208,7 +226,6 @@ do_cp() {
   fi
 }
 
-# 删除容器
 do_rm_force() {
   need_rt || return 1
   local names ans
@@ -425,6 +442,242 @@ do_compose_logs() {
 }
 
 # ============================================================
+# 四、tmux 快捷操作
+# ============================================================
+
+need_tmux() {
+  if [[ -z "$TMUX_OK" ]]; then
+    echo "${RED}✗ 未检测到 tmux${NC}"
+    install_hint tmux
+    return 1
+  fi
+  return 0
+}
+
+# 创建后台会话
+do_tmux_new_session() {
+  need_tmux || return 1
+  local name
+  read -r -p "会话名（默认 main）: " name
+  name=${name:-main}
+  run tmux new-session -d -s "$name" && echo "${GREEN}✓ 已创建会话: ${name}${NC}"
+}
+
+# 在会话中后台发送命令
+do_tmux_send_keys() {
+  need_tmux || return 1
+  local name cmd
+  read -r -p "会话名（默认 main）: " name
+  name=${name:-main}
+  read -r -p "要发送的命令（默认 mkdir demo）: " cmd
+  cmd=${cmd:-mkdir demo}
+  run tmux send-keys -t "$name" "$cmd" Enter
+}
+
+# 列出会话
+do_tmux_ls() {
+  need_tmux || return 1
+  run tmux ls
+}
+
+# 连接会话（最近 / 指定）
+do_tmux_attach() {
+  need_tmux || return 1
+  local name
+  read -r -p "会话名（留空 = 最近会话）: " name
+  if [[ -z "$name" ]]; then
+    run tmux attach
+  else
+    run tmux attach -t "$name"
+  fi
+}
+
+# 分离会话
+do_tmux_detach() {
+  need_tmux || return 1
+  if [[ -n "${TMUX:-}" ]]; then
+    echo "${YELLOW}当前在 tmux 会话内，执行 detach 分离${NC}"
+    run tmux detach
+  else
+    echo "${YELLOW}当前不在 tmux 会话内，尝试分离所有附加的客户端...${NC}"
+    echo "${YELLOW}提示：在 tmux 内分离会话可直接按 Ctrl-b d${NC}"
+    run tmux detach-client -a 2>/dev/null || echo "${YELLOW}没有正在附加的客户端${NC}"
+  fi
+}
+
+# 删除指定会话
+do_tmux_kill_session() {
+  need_tmux || return 1
+  local name
+  read -r -p "要删除的会话名: " name
+  [[ -z "$name" ]] && return 0
+  run tmux kill-session -t "$name"
+}
+
+# 删除所有会话
+do_tmux_kill_server() {
+  need_tmux || return 1
+  local ans
+  read -r -p "${RED}确认删除所有 tmux 会话？[y/N]: ${NC}" ans
+  [[ "$ans" =~ ^[Yy]$ ]] || return 0
+  run tmux kill-server
+}
+
+# 重命名会话
+do_tmux_rename_session() {
+  need_tmux || return 1
+  local old new
+  read -r -p "原会话名: " old
+  [[ -z "$old" ]] && return 0
+  read -r -p "新会话名: " new
+  [[ -z "$new" ]] && return 0
+  run tmux rename-session -t "$old" "$new"
+}
+
+# ============================================================
+# 五、ollama 快捷操作
+# ============================================================
+
+need_ollama() {
+  if [[ -z "$OLLAMA_OK" ]]; then
+    echo "${RED}✗ 未检测到 ollama${NC}"
+    install_hint ollama
+    return 1
+  fi
+  return 0
+}
+
+# ---- 模型管理 ----
+do_ollama_pull() {
+  need_ollama || return 1
+  local model
+  read -r -p "模型名（如 llama3.2）: " model
+  [[ -z "$model" ]] && return 0
+  run ollama pull "$model"
+}
+
+do_ollama_list() {
+  need_ollama || return 1
+  run ollama list
+}
+
+do_ollama_serve() {
+  need_ollama || return 1
+  echo "${YELLOW}注意：ollama serve 会阻塞当前终端，Ctrl+C 退出${NC}"
+  run ollama serve
+}
+
+do_ollama_show() {
+  need_ollama || return 1
+  local model ans
+  read -r -p "模型名: " model
+  [[ -z "$model" ]] && return 0
+  read -r -p "查看完整 Modelfile? [y/N]: " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    run ollama show "$model" --modelfile
+  else
+    run ollama show "$model"
+  fi
+}
+
+do_ollama_rm() {
+  need_ollama || return 1
+  local model
+  read -r -p "要删除的模型名: " model
+  [[ -z "$model" ]] && return 0
+  run ollama rm "$model"
+}
+
+do_ollama_cp() {
+  need_ollama || return 1
+  local src dst
+  read -r -p "源模型名: " src
+  [[ -z "$src" ]] && return 0
+  read -r -p "目标模型名: " dst
+  [[ -z "$dst" ]] && return 0
+  run ollama cp "$src" "$dst"
+}
+
+do_ollama_create() {
+  need_ollama || return 1
+  local name file
+  read -r -p "新模型名: " name
+  [[ -z "$name" ]] && return 0
+  read -r -p "Modelfile 路径（默认 ./Modelfile）: " file
+  file=${file:-./Modelfile}
+  file=$(expand_tilde "$file")
+  run ollama create "$name" -f "$file"
+}
+
+do_ollama_push() {
+  need_ollama || return 1
+  local model
+  read -r -p "要推送的模型名: " model
+  [[ -z "$model" ]] && return 0
+  run ollama push "$model"
+}
+
+# ---- 运行状态 ----
+do_ollama_ps() {
+  need_ollama || return 1
+  run ollama ps
+}
+
+do_ollama_stop() {
+  need_ollama || return 1
+  local model
+  read -r -p "要停止的模型名（如 llama3.2）: " model
+  [[ -z "$model" ]] && return 0
+  run ollama stop "$model"
+}
+
+# ---- 运行与交互 ----
+do_ollama_run() {
+  need_ollama || return 1
+  local model mode prompt file img
+  read -r -p "模型名（如 llama3.2）: " model
+  [[ -z "$model" ]] && return 0
+  echo "  1) 交互对话"
+  echo "  2) 一次性提问"
+  echo "  3) 从文件输入"
+  echo "  4) 多模态提问（文本 + 图像）"
+  read -r -p "请选择（默认 1）: " mode
+  mode=${mode:-1}
+  case "$mode" in
+    2)
+      read -r -p "问题: " prompt
+      [[ -z "$prompt" ]] && return 0
+      run ollama run "$model" "$prompt"
+      ;;
+    3)
+      read -r -p "输入文件路径: " file
+      [[ -z "$file" ]] && return 0
+      file=$(expand_tilde "$file")
+      if [[ ! -f "$file" ]]; then
+        echo "${RED}✗ 文件不存在: ${file}${NC}"
+        return 1
+      fi
+      printf '%s+ ollama run %s < %s%s\n' "$BLUE" "$model" "$file" "$NC"
+      ollama run "$model" < "$file"
+      ;;
+    4)
+      read -r -p "文本提示: " prompt
+      read -r -p "图像文件路径: " img
+      [[ -z "$img" ]] && return 0
+      img=$(expand_tilde "$img")
+      if [[ ! -f "$img" ]]; then
+        echo "${RED}✗ 图像文件不存在: ${img}${NC}"
+        return 1
+      fi
+      run ollama run "$model" "$prompt $img"
+      ;;
+    *)
+      run ollama run "$model"
+      ;;
+  esac
+}
+
+# ============================================================
 # 菜单
 # ============================================================
 
@@ -511,7 +764,7 @@ compose_menu() {
     echo "  1) 启动服务                 (start)"
     echo "  2) 停止服务                 (stop)"
     echo "  3) 重启服务                 (restart)"
-    echo "  4) 启动所有服务             (up / -d / --force-recreate / --no-recreate)"
+    echo "  4) 启动所有容器             (up / -d / --force-recreate / --no-recreate)"
     echo "  5) 停止并移除资源           (down)"
     echo "  6) 查看运行中的服务         (ps)"
     echo "  7) 删除容器                 (rm / rm -f)"
@@ -538,24 +791,104 @@ compose_menu() {
   done
 }
 
+tmux_menu() {
+  while true; do
+    echo; hr
+    echo "${BOLD}tmux 快捷操作（${TMUX_OK:-未检测到 tmux}）${NC}"
+    hr
+    echo "  1) 创建会话（后台）            (new-session -d -s <name>)"
+    echo "  2) 在会话中发送命令            (send-keys -t <name> <cmd> Enter)"
+    echo "  3) 列出会话                    (ls)"
+    echo "  4) 连接会话                    (attach / attach -t <name>)"
+    echo "  5) 分离会话                    (detach / detach-client)"
+    echo "  6) 删除指定会话                (kill-session -t <name>)"
+    echo "  7) 删除所有会话                (kill-server)"
+    echo "  8) 重命名会话                  (rename-session -t <old> <new>)"
+    echo
+    echo "  0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) do_tmux_new_session ;;
+      2) do_tmux_send_keys ;;
+      3) do_tmux_ls ;;
+      4) do_tmux_attach ;;
+      5) do_tmux_detach ;;
+      6) do_tmux_kill_session ;;
+      7) do_tmux_kill_server ;;
+      8) do_tmux_rename_session ;;
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
+}
+
+ollama_menu() {
+  while true; do
+    echo; hr
+    echo "${BOLD}ollama 快捷操作（${OLLAMA_OK:-未检测到 ollama}）${NC}"
+    hr
+    echo "${CYAN}── 模型管理 ──${NC}"
+    echo "  1) 拉取模型                    (pull <model>)"
+    echo "  2) 列出本地模型                (list)"
+    echo "  3) 启动服务（阻塞）            (serve)"
+    echo "  4) 查看模型信息                (show <model> [--modelfile])"
+    echo "  5) 删除模型                    (rm <model>)"
+    echo "  6) 复制模型                    (cp <src> <dst>)"
+    echo "  7) 从 Modelfile 创建模型       (create <name> -f <file>)"
+    echo "  8) 推送模型                    (push <model>)"
+    echo "${CYAN}── 运行状态 ──${NC}"
+    echo "  9) 查看运行中的模型            (ps)"
+    echo "  10) 停止指定模型               (stop <model>)"
+    echo "${CYAN}── 运行与交互 ──${NC}"
+    echo "  11) 运行模型（交互/一次性/文件/多模态）(run <model> ...)"
+    echo
+    echo "  0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) do_ollama_pull ;;
+      2) do_ollama_list ;;
+      3) do_ollama_serve ;;
+      4) do_ollama_show ;;
+      5) do_ollama_rm ;;
+      6) do_ollama_cp ;;
+      7) do_ollama_create ;;
+      8) do_ollama_push ;;
+      9) do_ollama_ps ;;
+      10) do_ollama_stop ;;
+      11) do_ollama_run ;;
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
+}
+
 main_menu() {
   while true; do
     echo; hr
     echo "${BOLD}Docker/Podman 开发工具箱${NC}"
     hr
     echo "  运行时: ${GREEN}${RT_NAME:-未检测到}${NC}    Compose: ${GREEN}${COMPOSE_NAME:-未检测到}${NC}"
+    echo "  tmux:   ${GREEN}${TMUX_OK:-未检测到}${NC}    ollama:  ${GREEN}${OLLAMA_OK:-未检测到}${NC}"
     hr
-    echo "1) 容器操作  (ps / run / exec / cp / rm / start / stop / restart / network / logs / top)"
-    echo "2) 镜像操作  (build / pull / push / images / rmi / save / load)"
+    echo "1) 容器操作      (ps / run / exec / cp / rm / start / stop / restart / network / logs / top)"
+    echo "2) 镜像操作      (build / pull / push / images / rmi / save / load)"
     echo "3) Compose 操作  (start / stop / restart / up / down / ps / rm / logs)"
-    echo "4) 重新检测运行时和 Compose 命令"
+    echo "4) tmux 快捷操作 (new-session / send-keys / ls / attach / detach / kill / rename)"
+    echo "5) ollama 快捷操作(pull / list / serve / show / rm / cp / create / push / ps / stop / run)"
+    echo "6) 重新检测运行时和外部命令"
     echo "0) 退出"
     read -r -p "请选择: " choice
     case "$choice" in
       1) container_menu ;;
       2) image_menu ;;
       3) compose_menu ;;
-      4) preflight_check ;;
+      4) tmux_menu ;;
+      5) ollama_menu ;;
+      6) preflight_check ;;
       0|q|Q)
         echo "Bye."
         if is_sourced; then
