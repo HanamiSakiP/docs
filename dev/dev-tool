@@ -182,6 +182,11 @@ do_node() {
     run_npm_install skills
     run_npm_install bun
     run_npm_install pnpm
+    run_npm_install @officecli/officecli
+    run_npm_install @fresh-editor/fresh-editor
+    run_npm_install @dbx-app/cli
+    run_npm_install @playwright/cli@latest
+    run_npm_install cc-connect
     run_npm_install @bitwarden/cli
     run_npm_install @earendil-works/pi-coding-agent
     run_npm_install @anthropic-ai/claude-code
@@ -206,6 +211,7 @@ do_go() {
     run_go_install github.com/restic/restic/cmd/restic@latest restic
     run_go_install github.com/rclone/rclone@latest rclone
     run_go_install github.com/junegunn/fzf@latest fzf
+    run_go_install github.com/jesseduffield/lazygit@latest
 
     # Go AI 工具
     run_go_install github.com/hybridgroup/yzma@latest yzma
@@ -232,6 +238,7 @@ do_pip() {
     run pyenv global 3.12.3
     run python -m pip install "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
     run pip install httpie
+    run pip install uv
     run pip install cli-anything-hub
     # 所有 pip 安装完成后清理缓存
     run_try pip cache purge

@@ -39,12 +39,29 @@ apt update
 apt install curl git -y # nano
 ```
 ```bash
+# 数据库MCP
+npx @dbx-app/mcp-server
+# 1. 浏览器
+npm install puppeteer-core
+git clone https://github.com/h4ckf0r0day/obscura.git
+cd obscura
+# Rendering
+cargo build --release -p obscura-cli --bins --features render
+# 2. 自主工作的“Hands”
+cargo install --git https://github.com/RightNow-AI/openfang openfang-cli
+# 3. 远程连接
+cargo install --path crates/sshx
+# 4. 二进制查看
+cargo install binsider
+# 5. 类似 Git 
+cargo install jj-cli
 docsify serve .
 # 每天02点执行rclone同步
 0 2 * * * flock -n /tmp/rclone.lock ~/go/bin/rclone sync /本地/路径 remote:云端路径 --log-file /home/你的用户名/rclone-sync.log --log-level INFO
 # 安装tui工具
-gh release download --repo denisidoro/navi --pattern "*x86_64-unknown-linux-musl*"
+# 6. 终端文件管理
 gh release download --repo sxyazi/yazi --pattern "*x86_64-unknown-linux-musl*"
+# 7. 终端复用器
 gh release download --repo zellij-org/zellij --pattern "*x86_64-unknown-linux-musl*"
 ```
 
