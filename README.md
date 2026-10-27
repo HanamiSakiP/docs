@@ -47,22 +47,25 @@ git clone https://github.com/h4ckf0r0day/obscura.git
 cd obscura
 # Rendering
 cargo build --release -p obscura-cli --bins --features render
-# 2. 自主工作的“Hands”
-cargo install --git https://github.com/RightNow-AI/openfang openfang-cli
-# 3. 远程连接
-cargo install --path crates/sshx
-# 4. 二进制查看
-cargo install binsider
-# 5. 类似 Git 
+# 查看 rust 工具
+cargo install --list
+cargo install --locked starship
+cargo install --locked navi
+cargo install --locked zellij
 cargo install jj-cli
+cargo install lsd
+cargo install binsider
+cargo install microsandbox
+cargo install lychee
+cargo install code2prompt
+cargo install --force --git https://github.com/sxyazi/yazi.git yazi-build
+cargo install --force --git https://github.com/RightNow-AI/openfang openfang-cli
+cargo install --git https://github.com/ekzhang/sshx --bin sshx
+```
+```bash
 docsify serve .
 # 每天02点执行rclone同步
 0 2 * * * flock -n /tmp/rclone.lock ~/go/bin/rclone sync /本地/路径 remote:云端路径 --log-file /home/你的用户名/rclone-sync.log --log-level INFO
-# 安装tui工具
-# 6. 终端文件管理
-gh release download --repo sxyazi/yazi --pattern "*x86_64-unknown-linux-musl*"
-# 7. 终端复用器
-gh release download --repo zellij-org/zellij --pattern "*x86_64-unknown-linux-musl*"
 ```
 
 </details>
