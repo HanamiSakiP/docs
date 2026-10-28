@@ -63,6 +63,24 @@ cargo install --force --git https://github.com/RightNow-AI/openfang openfang-cli
 cargo install --git https://github.com/ekzhang/sshx --bin sshx
 ```
 ```bash
+eval "$(starship init bash)"
+function y() {
+local tmp cwd; tmp="$(mktemp -t "yazi-cwd.XXXXXX")"
+command yazi "$@" --cwd-file="$tmp"
+IFS= read -r -d '' cwd < "$tmp"
+[ "$cwd" != "$PWD" ] && [ -d "$cwd" ] && builtin cd -- "$cwd" || builtin true
+command rm -f -- "$tmp"
+}
+```
+```bash
+cat >> ~/.cargo/config.toml << 'EOF'
+[net]
+git-fetch-with-cli = true
+EOF
+rm -rf ~/.cargo/git ~/.cargo/registry
+```
+```bash
+CARGO_TARGET_DIR=~/.cargo-target 
 docsify serve .
 # 每天02点执行rclone同步
 0 2 * * * flock -n /tmp/rclone.lock ~/go/bin/rclone sync /本地/路径 remote:云端路径 --log-file /home/你的用户名/rclone-sync.log --log-level INFO
