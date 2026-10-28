@@ -63,6 +63,7 @@ install_hint() {
     restic)   echo "  restic   : sudo apt install restic / sudo dnf install restic / brew install restic（或 https://github.com/restic/restic/releases 下载静态二进制）" ;;
     dsh)      echo "  dsh      : npx @deepseek-ai/dsh web  或  npm i -g @deepseek-ai/dsh" ;;
     rea)      echo "  rea      : npx rea-agents setup  或  npm i -g rea-agents" ;;
+    fresh)    echo "  fresh    : https://github.com/sinelaw/fresh  （brew install fresh / cargo install fresh-editor / 参考官方安装脚本）" ;;
     *)        echo "  $1       : 请自行安装" ;;
   esac
 }
@@ -570,6 +571,7 @@ do_find_git_projects() {
   if is_sourced; then
     cd "$dir" || return 1
     echo "${GREEN}✓ 当前 shell 已切换到: $(pwd)${NC}"
+    maybe_open_editor
     read -r -p "是否进入 Git 交互式操作菜单? [y/N]: " ans
     if [[ "$ans" =~ ^[Yy]$ ]]; then
       git_menu
@@ -579,6 +581,7 @@ do_find_git_projects() {
     read -r -p "是否进入该目录的新 shell?（exit 后回原 shell）[Y/n]: " ans
     if [[ ! "$ans" =~ ^[Nn]$ ]]; then
       cd "$dir" || return 1
+      maybe_open_editor
       echo "${GREEN}✓ 进入新 shell: $(pwd)（输入 exit 返回原 shell）${NC}"
       exec "${SHELL:-bash}" -i
     fi
@@ -622,6 +625,7 @@ do_create_git_project() {
   echo "${GREEN}✓ 项目目录: $(pwd)${NC}"
 
   if is_sourced; then
+    maybe_open_editor
     read -r -p "是否进入 Git 交互式操作菜单? [y/N]: " ans
     if [[ "$ans" =~ ^[Yy]$ ]]; then
       git_menu
@@ -629,6 +633,7 @@ do_create_git_project() {
   else
     read -r -p "是否进入该目录的新 shell?（exit 后回原 shell）[Y/n]: " ans
     if [[ ! "$ans" =~ ^[Nn]$ ]]; then
+      maybe_open_editor
       echo "${GREEN}✓ 进入新 shell: $(pwd)（输入 exit 返回原 shell）${NC}"
       exec "${SHELL:-bash}" -i
     fi
@@ -636,6 +641,93 @@ do_create_git_project() {
     echo "${YELLOW}  手动切换：cd $(printf '%q' "$dir")${NC}"
     echo "${YELLOW}  或改用：  source $0   （让 devkit 里的 cd 直接生效）${NC}"
   fi
+}
+
+# 询问是否用 fresh 打开目录（默认打开）；fresh 未安装则提示并跳过
+maybe_open_editor() {
+  local dir="${1:-$PWD}"
+  local ans bin
+  read -r -p "是否用 fresh 打开该目录? [Y/n]: " ans
+  if [[ "$ans" =~ ^[Nn]$ ]]; then
+    return 0
+  fi
+
+  # 优先用 PATH 里的 fresh；否则尝试 ~/go/bin/fresh
+  if have fresh; then
+    bin="fresh"
+  elif [[ -x "$HOME/go/bin/fresh" ]]; then
+    bin="$HOME/go/bin/fresh"
+  else
+    echo "${YELLOW}未安装 fresh，跳过打开编辑器${NC}"
+    install_hint fresh
+    return 0
+  fi
+
+  run "$bin" "$dir"
+}
+
+# ---------------- 7++. 快速进入工具箱目录 ----------------
+do_cd_devmgr_ai() {
+  local dir="${HOME}/.local/share/devmgr/AI"
+  local ans
+
+  if [[ ! -d "$dir" ]]; then
+    echo "${YELLOW}目录不存在: $dir${NC}"
+    read -r -p "是否创建该目录? [Y/n]: " ans
+    if [[ "$ans" =~ ^[Nn]$ ]]; then
+      return 0
+    fi
+    mkdir -p "$dir" || { echo "${RED}创建失败${NC}"; return 1; }
+    echo "${GREEN}✓ 已创建: $dir${NC}"
+  fi
+
+  if is_sourced; then
+    cd "$dir" || return 1
+    echo "${GREEN}✓ 当前 shell 已切换到: $(pwd)${NC}"
+    maybe_open_editor
+    read -r -p "是否进入 Git 交互式操作菜单? [y/N]: " ans
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      git_menu
+    fi
+  else
+    echo "${CYAN}目标目录: $dir${NC}"
+    read -r -p "是否进入该目录的新 shell?（exit 后回原 shell）[Y/n]: " ans
+    if [[ ! "$ans" =~ ^[Nn]$ ]]; then
+      cd "$dir" || return 1
+      maybe_open_editor
+      echo "${GREEN}✓ 进入新 shell: $(pwd)（输入 exit 返回原 shell）${NC}"
+      exec "${SHELL:-bash}" -i
+    fi
+    echo "${YELLOW}提示：直接执行脚本无法改变父 shell 的目录。${NC}"
+    echo "${YELLOW}  手动切换：cd $(printf '%q' "$dir")${NC}"
+    echo "${YELLOW}  或改用：  source $0   （让 devkit 里的 cd 直接生效）${NC}"
+  fi
+}
+
+# ---------------- 7+. 本地 git 项目快捷操作（查找 / 创建 / 跳转） ----------------
+local_git_project_menu() {
+  while true; do
+    echo
+    hr
+    echo "${BOLD}本地 git 项目快捷操作${NC}"
+    hr
+    echo "  ${RED}1) 快速找到所有 git 项目并跳转  (fzf)${NC}"
+    echo "  ${RED}2) 快速创建 git 项目并跳转  (~/.local/share/devmgr/<name>)${NC}"
+    echo "  ${RED}3) 快速进入工具箱目录  (~/.local/share/devmgr/AI)${NC}"
+    echo "  ${YELLOW}提示：跳转成功后默认询问是否用 fresh 打开该目录${NC}"
+    echo
+    echo "  0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) do_find_git_projects ;;
+      2) do_create_git_project ;;
+      3) do_cd_devmgr_ai ;;
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
 }
 
 # ---------------- 8. gh 仓库 / 星标 / Release 管理 ----------------
@@ -1108,11 +1200,10 @@ main_menu() {
     echo "2) 检查 AI-CLI 登录状态 + 查看登录指引  (claude / opencode / codex)"
     echo "${RED}3) Git 交互式操作${NC}"
     echo "4) AI 工具介绍  (dsh / rea-agents)"
-    echo "${RED}5) 快速找到所有 git 项目并跳转  (fzf)${NC}"
-    echo "${RED}6) 快速创建 git 项目并跳转  (~/.local/share/devmgr/<name>)${NC}"
-    echo "${RED}7) gh 仓库列表 / 星标集合 / Release 管理${NC}"
-    echo "${RED}8) rclone / restic 快捷操作  (config / list / copy / sync / snapshots / restore / backup)${NC}"
-    echo "9) 全部检查（1 + 2）"
+    echo "${RED}5) 本地 git 项目快捷操作  (查找 / 创建 / 跳转)${NC}"
+    echo "${RED}6) gh 仓库列表 / 星标集合 / Release 管理${NC}"
+    echo "${RED}7) rclone / restic 快捷操作  (config / list / copy / sync / snapshots / restore / backup)${NC}"
+    echo "8) 全部检查（1 + 2）"
     echo "0) 退出"
     read -r -p "请选择: " choice
     case "$choice" in
@@ -1120,11 +1211,10 @@ main_menu() {
       2) check_ai_auth_and_help ;;
       3) git_menu ;;
       4) ai_tools_intro ;;
-      5) do_find_git_projects ;;
-      6) do_create_git_project ;;
-      7) do_gh_repo_menu ;;
-      8) rclone_restic_menu ;;
-      9) check_git_auth; echo; check_ai_auth ;;
+      5) local_git_project_menu ;;
+      6) do_gh_repo_menu ;;
+      7) rclone_restic_menu ;;
+      8) check_git_auth; echo; check_ai_auth ;;
       0|q|Q)
         echo "Bye."
         if is_sourced; then

@@ -1,778 +1,1164 @@
 #!/usr/bin/env bash
-# rustmgr - Rust 工具链管理器
-# 支持 rustup / cargo 的安装、备份、恢复
 #
-# 安装: cp rustmgr ~/.local/bin/rustmgr && chmod +x ~/.local/bin/rustmgr
-# 或:   ln -sf "$(pwd)/rustmgr" ~/.local/bin/rustmgr
-
-set -euo pipefail
-IFS=$'\n\t'
-
-VERSION="1.0.0"
-PROG_NAME="${0##*/}"
-
-# ================================================================
-# 路径解析（支持软链接调用）
-# ================================================================
-resolve_script_dir() {
-    local src="${BASH_SOURCE[0]}" dir
-    while [ -L "$src" ]; do
-        dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
-        src="$(readlink "$src")"
-        [[ "$src" != /* ]] && src="$dir/$src"
-    done
-    cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd
-}
-SCRIPT_DIR="$(resolve_script_dir)"
-SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
-[ -n "$SELF_PATH" ] || SELF_PATH="$SCRIPT_DIR/$PROG_NAME"
-
-BACKUP_DIR="${RUSTMGR_BACKUP_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/rustmgr/backups}"
-
-# ================================================================
-# Rust 路径
-# ================================================================
-RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
-CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
-
-RUSTUP_INIT_URL="${RUSTUP_INIT_URL:-https://sh.rustup.rs}"
-
-# ================================================================
-# 颜色 & 日志
-# ================================================================
-if [ -t 1 ]; then
-    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'
-    BLUE=$'\033[0;34m'; CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; NC=$'\033[0m'
-else
-    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; DIM=''; NC=''
+# devkit —— 开发环境检查 & Git 交互式小工具
+#
+# 安装到命令：
+#   mkdir -p ~/.local/bin
+#   cp devkit ~/.local/bin/devkit
+#   chmod +x ~/.local/bin/devkit
+#
+# 希望退出 devkit 后 shell 仍停在「快速找到 git 项目」所选目录时：
+#   方式A（推荐）：source devkit   （或 . devkit）
+#   方式B：直接执行 devkit，选中项目后按提示进入新子 shell，exit 后回原 shell
+#
+# 仅在直接执行时开启严格模式，避免 source 时污染调用方 shell
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+  set -u
 fi
 
-log_info()  { printf '%s[INFO]%s %s\n' "$CYAN"  "$NC" "$*"; }
-log_ok()    { printf '%s[ OK ]%s %s\n' "$GREEN" "$NC" "$*"; }
-log_warn()  { printf '%s[WARN]%s %s\n' "$YELLOW" "$NC" "$*" >&2; }
-log_error() { printf '%s[ERR ]%s %s\n' "$RED"   "$NC" "$*" >&2; }
-
-substep() { printf '      %s→%s %s\n' "$DIM" "$NC" "$*"; }
-
-# ================================================================
-# tar 能力检测
-# ================================================================
-TAR_WARN_OPTS=()
-if tar --warning=no-file-changed -cf /dev/null /dev/null >/dev/null 2>&1; then
-    TAR_WARN_OPTS=(--warning=no-file-changed)
+# ---------------- 颜色 ----------------
+if [[ -t 1 ]]; then
+  RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'; CYAN=$'\033[36m'; BOLD=$'\033[1m'; NC=$'\033[0m'
 else
-    log_warn "当前 tar 不支持 --warning=no-file-changed（将容忍 rc=1）"
+  RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; NC=''
 fi
 
-TAR_EXTRA_OPTS=()
-if tar --ignore-failed-read -cf /dev/null /dev/null >/dev/null 2>&1; then
-    TAR_EXTRA_OPTS=(--ignore-failed-read)
-else
-    log_warn "当前 tar 不支持 --ignore-failed-read（ELOOP 等读错误会中断）"
-fi
+have() { command -v "$1" >/dev/null 2>&1; }
 
-# ================================================================
-# 排除模式
-# ================================================================
-EXCLUDES=(
-    '--exclude=.git' '--exclude=.github' '--exclude=.gitignore'
-    '--exclude=.cache'
-    '--exclude=tmp' '--exclude=temp'
-    '--exclude=*.log'
-)
+is_sourced() { [[ "${BASH_SOURCE[0]:-$0}" != "$0" ]]; }
 
-CARGO_CACHE_EXCLUDES=(
-    '--exclude=registry'
-    '--exclude=git'
-)
+hr() { printf '%s\n' "${CYAN}------------------------------------------------------------${NC}"; }
 
-# ================================================================
-# 工具状态检测
-# ================================================================
-is_rust_installed() {
-    [ -x "$CARGO_HOME/bin/rustup" ] && return 0
-    [ -x "$CARGO_HOME/bin/cargo" ] && return 0
-    command -v rustup >/dev/null 2>&1 && return 0
-    command -v cargo >/dev/null 2>&1
+run() {
+  printf '%s+ %s%s\n' "$BLUE" "$*" "$NC"
+  "$@"
 }
 
-rust_version() {
-    if [ -x "$CARGO_HOME/bin/rustc" ]; then
-        "$CARGO_HOME/bin/rustc" --version 2>/dev/null | head -n1
-    elif command -v rustc >/dev/null 2>&1; then
-        rustc --version 2>/dev/null | head -n1
-    fi
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# 把开头是 ~ 的路径展开为 $HOME（read 不会自动展开）
+expand_tilde() {
+  local p="$1"
+  if [[ "$p" == "~" ]]; then
+    printf '%s' "$HOME"
+  elif [[ "$p" == "~/"* ]]; then
+    printf '%s' "${HOME}/${p#\~/}"
+  else
+    printf '%s' "$p"
+  fi
 }
 
-cargo_version() {
-    if [ -x "$CARGO_HOME/bin/cargo" ]; then
-        "$CARGO_HOME/bin/cargo" --version 2>/dev/null | head -n1
-    elif command -v cargo >/dev/null 2>&1; then
-        cargo --version 2>/dev/null | head -n1
-    fi
+# ---------------- 安装提示 ----------------
+install_hint() {
+  case "$1" in
+    git)      echo "  git      : sudo apt install git / sudo dnf install git / brew install git" ;;
+    gh)       echo "  gh       : https://cli.github.com/  （brew install gh / sudo apt install gh）" ;;
+    glab)     echo "  glab     : https://gitlab.com/gitlab-org/cli  （brew install glab）" ;;
+    claude)   echo "  claude   : npm i -g @anthropic-ai/claude-code" ;;
+    opencode) echo "  opencode : 参考 https://opencode.ai/docs 安装" ;;
+    codex)    echo "  codex    : npm i -g @openai/codex" ;;
+    fzf)      echo "  fzf      : sudo apt install fzf / sudo dnf install fzf / brew install fzf" ;;
+    rclone)   echo "  rclone   : curl https://rclone.org/install.sh | sudo bash / brew install rclone / sudo apt install rclone" ;;
+    restic)   echo "  restic   : sudo apt install restic / sudo dnf install restic / brew install restic（或 https://github.com/restic/restic/releases 下载静态二进制）" ;;
+    dsh)      echo "  dsh      : npx @deepseek-ai/dsh web  或  npm i -g @deepseek-ai/dsh" ;;
+    rea)      echo "  rea      : npx rea-agents setup  或  npm i -g rea-agents" ;;
+    *)        echo "  $1       : 请自行安装" ;;
+  esac
 }
 
-rustup_version() {
-    if [ -x "$CARGO_HOME/bin/rustup" ]; then
-        "$CARGO_HOME/bin/rustup" --version 2>/dev/null | head -n1
-    elif command -v rustup >/dev/null 2>&1; then
-        rustup --version 2>/dev/null | head -n1
-    fi
-}
-
-# ================================================================
-# 依赖 & 磁盘检查
-# ================================================================
-check_dependencies() {
-    local dep
-    for dep in curl tar; do
-        command -v "$dep" >/dev/null 2>&1 || { log_error "缺少必需依赖: $dep"; exit 1; }
-    done
-    [ -w "$HOME" ] || { log_error "用户目录 '$HOME' 不可写"; exit 1; }
-}
-
-check_disk() {
-    local avail_kb
-    avail_kb=$(df -Pk "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || true)
-    if [ -n "${avail_kb:-}" ] && [ "$avail_kb" -lt 204800 ]; then
-        log_warn "备份目录剩余空间较小（${avail_kb}KB），备份可能失败"
-    fi
-}
-
-# ================================================================
-# 配置文件辅助
-# ================================================================
-add_line_if_missing() {
-    local file="$1" line="$2"
-    touch "$file"
-    if ! grep -Fqx -- "$line" "$file"; then
-        printf '%s\n' "$line" >> "$file"
-        substep "写入 $file: $line"
-    fi
-}
-
-# ================================================================
-# 下载辅助
-# ================================================================
-download_file() {
-    local url="$1" out="$2"
-    substep "下载: $url"
-    local -a curl_opts=( -fL --retry 3 --retry-delay 2 --connect-timeout 15 )
-    if [ -t 2 ]; then
-        curl_opts+=( --progress-bar )
-    else
-        curl_opts+=( -sS )
-    fi
-    curl "${curl_opts[@]}" "$url" -o "$out"
-}
-
-# ================================================================
-# 进度执行
-# ================================================================
-_run_progress() {
-    local desc="$1" logfile="$2"; shift 2
-    local chars=('/' '-' '\' '|') i=0 pid rc=0
-    "$@" >"$logfile" 2>&1 &
-    pid=$!
-    if [ -t 1 ]; then
-        while kill -0 "$pid" 2>/dev/null; do
-            printf '\r  %s[%s]%s %s  ' "$BLUE" "${chars[i++%4]}" "$NC" "$desc"
-            sleep 0.15
-        done
-    fi
-    wait "$pid" || rc=$?
-    if [ -t 1 ]; then
-        if [ "$rc" -eq 0 ]; then
-            printf '\r  %s[✓]%s %-50s\n' "$GREEN" "$NC" "$desc"
-        else
-            printf '\r  %s[✗]%s %-50s\n' "$RED" "$NC" "$desc"
-        fi
-    fi
-    if [ "$rc" -ne 0 ]; then
-        log_warn "命令输出（末尾）:"
-        sed 's/^/      | /' "$logfile" | tail -n 30 >&2
-    fi
-    return "$rc"
-}
-
-# ================================================================
-# 在线安装
-# ================================================================
-install_rust_online() {
-    local no_modify_path="${1:-0}"
-    local install_script
-
-    install_script="$(mktemp)"
-    substep "获取 rustup 安装脚本"
-    if ! download_file "$RUSTUP_INIT_URL" "$install_script"; then
-        rm -f "$install_script"
-        log_error "下载 rustup 安装脚本失败"
-        return 1
-    fi
-
-    local -a init_args=(-y --default-toolchain stable)
-    [ "$no_modify_path" -eq 1 ] && init_args+=(--no-modify-path)
-
-    local logfile rc=0
-    logfile="$(mktemp)"
-    _run_progress "执行 rustup 安装脚本" "$logfile" \
-        env "RUSTUP_HOME=$RUSTUP_HOME" "CARGO_HOME=$CARGO_HOME" \
-        sh "$install_script" "${init_args[@]}" || rc=$?
-
-    rm -f "$install_script" "$logfile"
-
-    if [ "$rc" -ne 0 ]; then
-        log_error "rustup 安装失败"
-        return 1
-    fi
-
-    # ---- 环境变量写入 ----
-    local cfg_files=("$HOME/.bashrc" "$HOME/.profile" "$HOME/.zshrc")
-    local f
-    for f in "${cfg_files[@]}"; do
-        [ -f "$f" ] || continue
-        if [ "$RUSTUP_HOME" != "$HOME/.rustup" ]; then
-            add_line_if_missing "$f" "export RUSTUP_HOME=\"$RUSTUP_HOME\""
-        fi
-        if [ "$CARGO_HOME" != "$HOME/.cargo" ]; then
-            add_line_if_missing "$f" "export CARGO_HOME=\"$CARGO_HOME\""
-        fi
-        if [ "$no_modify_path" -eq 1 ]; then
-            add_line_if_missing "$f" '. "$HOME/.cargo/env"'
-        fi
-    done
-
-    export RUSTUP_HOME CARGO_HOME
-    [ -f "$CARGO_HOME/env" ] && . "$CARGO_HOME/env" 2>/dev/null || true
-}
-
-# ================================================================
-# 备份
-# ================================================================
-backup_rust() {
-    local out="$BACKUP_DIR/rust/rust_backup_$(date +%Y%m%d%H%M%S).tar.gz"
-    local tmp pack_stage
-    local found=0
-
-    mkdir -p "$BACKUP_DIR/rust"
-    tmp="$(mktemp -d)"
-    pack_stage="$(mktemp -d)"
-    trap 'rm -rf -- "$tmp" "$pack_stage"' EXIT
-
-    check_disk
-
-    # ---- ~/.rustup ----
-    if [ -d "$RUSTUP_HOME" ]; then
-        substep "打包 $RUSTUP_HOME"
-        mkdir -p "$tmp/rustup"
-        local tarfile crc=0 xrc=0
-        tarfile="$(mktemp "$pack_stage/rustup.XXXXXX.tar")"
-        ( cd "$RUSTUP_HOME" && tar \
-            "${TAR_WARN_OPTS[@]+"${TAR_WARN_OPTS[@]}"}" \
-            "${TAR_EXTRA_OPTS[@]+"${TAR_EXTRA_OPTS[@]}"}" \
-            "${EXCLUDES[@]}" -cf "$tarfile" . ) || crc=$?
-        if [ "$crc" -gt 1 ]; then
-            rm -f -- "$tarfile"
-            log_error "打包 $RUSTUP_HOME 失败 (rc=$crc)"
-            return 1
-        fi
-        [ "$crc" -eq 1 ] && log_warn "打包 $RUSTUP_HOME 时有文件变化（已容忍）"
-        ( cd "$tmp/rustup" && tar -xpf "$tarfile" ) || xrc=$?
-        rm -f -- "$tarfile"
-        if [ "$xrc" -ne 0 ]; then
-            log_error "解压 $RUSTUP_HOME 失败"
-            return 1
-        fi
-        found=1
-    else
-        substep "跳过 $RUSTUP_HOME（不存在）"
-    fi
-
-    # ---- ~/.cargo（排除缓存） ----
-    if [ -d "$CARGO_HOME" ]; then
-        substep "打包 $CARGO_HOME（排除 registry / git 缓存）"
-        mkdir -p "$tmp/cargo"
-        local tarfile crc=0 xrc=0
-        tarfile="$(mktemp "$pack_stage/cargo.XXXXXX.tar")"
-        ( cd "$CARGO_HOME" && tar \
-            "${TAR_WARN_OPTS[@]+"${TAR_WARN_OPTS[@]}"}" \
-            "${TAR_EXTRA_OPTS[@]+"${TAR_EXTRA_OPTS[@]}"}" \
-            "${EXCLUDES[@]}" \
-            "${CARGO_CACHE_EXCLUDES[@]}" \
-            -cf "$tarfile" . ) || crc=$?
-        if [ "$crc" -gt 1 ]; then
-            rm -f -- "$tarfile"
-            log_error "打包 $CARGO_HOME 失败 (rc=$crc)"
-            return 1
-        fi
-        [ "$crc" -eq 1 ] && log_warn "打包 $CARGO_HOME 时有文件变化（已容忍）"
-        ( cd "$tmp/cargo" && tar -xpf "$tarfile" ) || xrc=$?
-        rm -f -- "$tarfile"
-        if [ "$xrc" -ne 0 ]; then
-            log_error "解压 $CARGO_HOME 失败"
-            return 1
-        fi
-        found=1
-    else
-        substep "跳过 $CARGO_HOME（不存在）"
-    fi
-
-    if [ "$found" -eq 0 ]; then
-        log_error "未找到 Rust 相关目录（$RUSTUP_HOME / $CARGO_HOME）"
-        return 1
-    fi
-
-    # ---- 环境变量片段 ----
-    grep -E "(RUSTUP_HOME|CARGO_HOME|\.cargo/env|\.cargo/bin)" \
-        "$HOME"/.{bashrc,zshrc,profile} 2>/dev/null \
-        > "$tmp/env_config" || true
-
-    {
-        echo "ARCH=$(uname -m)"
-        echo "OS=$(uname -s)"
-        echo "RUSTUP_HOME=$RUSTUP_HOME"
-        echo "CARGO_HOME=$CARGO_HOME"
-    } > "$tmp/platform_info"
-
-    tar -czf "$out" -C "$tmp" .
-    rm -rf -- "$tmp" "$pack_stage"
-    trap - EXIT
-
-    log_ok "已创建: $out"
-}
-
-# ================================================================
-# 恢复
-# ================================================================
-check_backup_file() {
-    local file="$1"
-    [ -f "$file" ] || { log_error "备份文件不存在: $file"; return 1; }
-    tar -tzf "$file" >/dev/null 2>&1 || { log_error "非有效 tar.gz: $file"; return 1; }
-}
-
-restore_rust() {
-    local backup_file="$1"
-    check_backup_file "$backup_file" || return 1
-
-    local temp_dir
-    temp_dir="$(mktemp -d)"
-    trap 'rm -rf -- "$temp_dir"; trap - RETURN' RETURN
-
-    substep "解压备份"
-    tar -xzf "$backup_file" -C "$temp_dir"
-
-    if [ -f "$temp_dir/platform_info" ]; then
-        substep "备份平台信息:"
-        sed 's/^/         /' "$temp_dir/platform_info"
-        substep "当前平台: ARCH=$(uname -m) OS=$(uname -s)"
-    fi
-
-    local restored=0
-
-    if [ -d "$temp_dir/rustup" ] && [ "$(ls -A "$temp_dir/rustup" 2>/dev/null)" ]; then
-        substep "恢复 $RUSTUP_HOME"
-        mkdir -p "$RUSTUP_HOME"
-        cp -a "$temp_dir/rustup"/. "$RUSTUP_HOME"/
-        restored=1
-    fi
-
-    if [ -d "$temp_dir/cargo" ] && [ "$(ls -A "$temp_dir/cargo" 2>/dev/null)" ]; then
-        substep "恢复 $CARGO_HOME"
-        mkdir -p "$CARGO_HOME"
-        cp -a "$temp_dir/cargo"/. "$CARGO_HOME"/
-        restored=1
-    fi
-
-    if [ "$restored" -eq 0 ]; then
-        log_error "备份中未找到可恢复的 Rust 数据"
-        return 1
-    fi
-
-    local cfg_files=("$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile")
-    local f
-    for f in "${cfg_files[@]}"; do
-        [ -f "$f" ] || continue
-        if [ "$RUSTUP_HOME" != "$HOME/.rustup" ]; then
-            add_line_if_missing "$f" "export RUSTUP_HOME=\"$RUSTUP_HOME\""
-        fi
-        if [ "$CARGO_HOME" != "$HOME/.cargo" ]; then
-            add_line_if_missing "$f" "export CARGO_HOME=\"$CARGO_HOME\""
-        fi
-        add_line_if_missing "$f" '. "$HOME/.cargo/env"'
-    done
-
-    export RUSTUP_HOME CARGO_HOME
-    [ -f "$CARGO_HOME/env" ] && . "$CARGO_HOME/env" 2>/dev/null || true
-    export PATH="$CARGO_HOME/bin:$PATH"
-
-    log_ok "Rust 恢复完成"
-}
-
-# ================================================================
-# 备份查找
-# ================================================================
-_find_backup_files() {
-    local -a dirs=("$BACKUP_DIR/rust" "$BACKUP_DIR")
-    local d
-    shopt -s nullglob
-    for d in "${dirs[@]}"; do
-        [ -d "$d" ] || continue
-        local files=("$d/rust_backup_"*.tar.gz)
-        if [ ${#files[@]} -gt 0 ]; then
-            printf '%s\n' "${files[@]}" | LC_ALL=C sort
-            shopt -u nullglob
-            return 0
-        fi
-    done
-    shopt -u nullglob
-    return 0
-}
-
-find_latest_backup() {
-    local files
-    files="$(_find_backup_files)"
-    [ -z "$files" ] && return 0
-    printf '%s\n' "$files" | tail -n1
-}
-
-count_backups() {
-    local files
-    files="$(_find_backup_files)"
-    if [ -z "$files" ]; then
-        echo 0
-    else
-        printf '%s\n' "$files" | wc -l | tr -d ' '
-    fi
-}
-
-# ================================================================
-# install 前尝试从本地备份恢复
-# ================================================================
-try_restore_rust() {
-    local backup
-    backup="$(find_latest_backup)"
-    if [ -z "$backup" ]; then
-        return 1
-    fi
-    substep "发现本地备份: $(basename "$backup")"
-    if restore_rust "$backup"; then
-        return 0
-    fi
-    log_warn "从备份恢复失败，将回退到在线安装"
+# 检查一组命令，缺任意一个就提示安装并返回 1
+need_tools() {
+  local missing=() t
+  for t in "$@"; do
+    have "$t" || missing+=("$t")
+  done
+  if (( ${#missing[@]} > 0 )); then
+    echo "${RED}✗ 缺少命令: ${missing[*]}${NC}"
+    echo "${YELLOW}请自行安装后再使用该功能：${NC}"
+    for t in "${missing[@]}"; do install_hint "$t"; done
     return 1
+  fi
+  return 0
 }
 
-# ================================================================
-# 环境刷新
-# ================================================================
-reload_shell_env() {
-    substep "刷新 shell 环境"
-    set +u; set +e
-    # shellcheck disable=SC1090
-    source "$HOME/.bashrc" >/dev/null 2>&1
-    set -e; set -u
-
-    export RUSTUP_HOME CARGO_HOME
-    if [ -f "$CARGO_HOME/env" ]; then
-        # shellcheck disable=SC1091
-        . "$CARGO_HOME/env" 2>/dev/null || true
-    fi
-    export PATH="$CARGO_HOME/bin:$PATH"
-    return 0
-}
-
-verify_rust() {
-    if is_rust_installed || command -v cargo >/dev/null 2>&1; then
-        log_ok "Rust 验证通过"
-        return 0
-    fi
-    log_error "Rust 验证失败"
-    return 1
-}
-
-print_final_hint() {
+# ---------------- 启动前自检 ----------------
+preflight_check() {
+  local tools=(git gh glab claude opencode codex fzf rclone restic)
+  local missing=() t
+  for t in "${tools[@]}"; do
+    have "$t" || missing+=("$t")
+  done
+  if (( ${#missing[@]} > 0 )); then
+    echo "${YELLOW}⚠ 以下命令未安装：${missing[*]}${NC}"
+    echo "${YELLOW}相关功能将不可用，请自行安装：${NC}"
+    for t in "${missing[@]}"; do install_hint "$t"; done
     echo
-    echo "${DIM}提示: 脚本内的环境刷新仅作用于当前进程，请在你的终端执行:${NC}"
-    echo "    source ~/.bashrc  ${DIM}# 或 exec bash / 重开终端${NC}"
+  fi
 }
 
-# ================================================================
-# 清理（--force 用）
-# ================================================================
-clean_rust() {
-    rm -rf "$RUSTUP_HOME" 2>/dev/null || true
-    rm -rf "$CARGO_HOME/registry" "$CARGO_HOME/git" 2>/dev/null || true
-    # 保留 CARGO_HOME 下的 config.toml / bin
-}
+# ---------------- 1. Git 远程仓库登录状态 ----------------
+check_git_auth() {
+  hr
+  echo "${BOLD}Git 远程仓库登录状态${NC}"
+  hr
 
-# ================================================================
-# 子命令: install
-# ================================================================
-cmd_install() {
-    local force=0 no_restore=0 no_modify_path=0
-    local arg
-
-    for arg in "$@"; do
-        case "$arg" in
-            --force|-f)       force=1 ;;
-            --no-restore)     no_restore=1 ;;
-            --no-modify-path) no_modify_path=1 ;;
-            -h|--help)        show_help; exit 0 ;;
-            *)
-                log_error "未知参数: $arg"; return 1 ;;
-        esac
-    done
-
-    printf '\n%s=== rustmgr install ===%s\n' "$BOLD" "$NC"
-    [ "$force" = "1" ] && log_warn "启用 --force，将重新安装 Rust"
-
-    check_dependencies
-
-    if is_rust_installed && [ "$force" -ne 1 ]; then
-        log_warn "Rust 已安装，跳过"
-        log_warn "如需强制重装，请加 --force"
-        return 0
-    fi
-
-    if [ "$force" -eq 1 ] && is_rust_installed; then
-        substep "清理已有的 Rust 工具链"
-        clean_rust
-    fi
-
-    local restored=0
-    if [ "$no_restore" -ne 1 ]; then
-        if try_restore_rust; then
-            restored=1
-        fi
+  echo "${CYAN}[gh] GitHub CLI${NC}"
+  if have gh; then
+    if gh auth status 2>&1; then
+      echo "${GREEN}✓ gh 已登录${NC}"
     else
-        substep "已禁用本地恢复 (--no-restore)"
+      echo "${YELLOW}✗ gh 未登录，请运行: gh auth login${NC}"
     fi
+  else
+    echo "${RED}✗ 未安装 gh${NC}"; install_hint gh
+  fi
 
-    if [ "$restored" -eq 0 ]; then
-        substep "在线安装 Rust"
-        install_rust_online "$no_modify_path" || return 1
-    fi
-
-    reload_shell_env
-    verify_rust || return 1
-
-    printf '\n'
-    log_ok "=== Rust 安装完成 ==="
-    print_final_hint
-}
-
-# ================================================================
-# 子命令: backup
-# ================================================================
-cmd_backup() {
-    printf '\n%s=== rustmgr backup ===%s\n' "$BOLD" "$NC"
-    log_info "备份目录: $BACKUP_DIR"
-    mkdir -p "$BACKUP_DIR"
-
-    backup_rust
-}
-
-# ================================================================
-# 子命令: restore
-# ================================================================
-cmd_restore() {
-    local force=0
-    local arg
-
-    for arg in "$@"; do
-        case "$arg" in
-            --force|-f) force=1 ;;
-            -h|--help)  show_help; exit 0 ;;
-            *)
-                log_error "未知参数: $arg"; return 1 ;;
-        esac
-    done
-
-    printf '\n%s=== rustmgr restore ===%s\n' "$BOLD" "$NC"
-
-    if is_rust_installed && [ "$force" -ne 1 ]; then
-        log_warn "Rust 已安装，跳过（如需覆盖恢复请加 --force）"
-        return 0
-    fi
-
-    local backup
-    backup="$(find_latest_backup)"
-    if [ -z "$backup" ]; then
-        log_error "未找到 Rust 备份"
-        return 1
-    fi
-    substep "使用备份: $(basename "$backup")"
-
-    restore_rust "$backup" || return 1
-    reload_shell_env
-    verify_rust || return 1
-
-    print_final_hint
-    return 0
-}
-
-# ================================================================
-# 子命令: status
-# ================================================================
-cmd_status() {
-    printf '\n%s=== rustmgr status ===%s\n\n' "$BOLD" "$NC"
-    printf '%-10s %-14s %-40s %s\n' "ITEM" "STATUS" "LOCATION" "VERSION"
-    printf '%s\n' "--------------------------------------------------------------------------"
-
-    local status rust_v cargo_v rustup_v bcnt
-
-    if is_rust_installed; then
-        status="${GREEN}installed${NC}"
-        rust_v="$(rust_version 2>/dev/null || echo '-')"
-        cargo_v="$(cargo_version 2>/dev/null || echo '-')"
-        rustup_v="$(rustup_version 2>/dev/null || echo '-')"
+  echo
+  echo "${CYAN}[glab] GitLab CLI${NC}"
+  if have glab; then
+    if glab auth status 2>&1; then
+      echo "${GREEN}✓ glab 已登录${NC}"
     else
-        status="${YELLOW}missing${NC}"
-        rust_v="-" cargo_v="-" rustup_v="-"
+      echo "${YELLOW}✗ glab 未登录，请运行: glab auth login${NC}"
     fi
-
-    bcnt="$(count_backups)"
-
-    printf '%-10s %-22b %-40s %s\n' "rust" "$status" "$CARGO_HOME" "$rust_v"
-    printf '%-10s %-22s %-40s %s\n' "" "" "" "$cargo_v"
-    printf '%-10s %-22s %-40s %s\n' "" "" "" "$rustup_v"
-    printf '%-10s %-22b %-40s %s\n' "rustup" "$status" "$RUSTUP_HOME" "-"
-    printf '         %sbackups: %s%s\n' "$DIM" "$bcnt" "$NC"
-
-    printf '\n备份目录: %s\n' "$BACKUP_DIR"
-    return 0
+  else
+    echo "${RED}✗ 未安装 glab${NC}"; install_hint glab
+  fi
 }
 
-# ================================================================
-# 子命令: list
-# ================================================================
-cmd_list() {
-    printf '\n%s=== rustmgr list ===%s\n' "$BOLD" "$NC"
+# ---------------- 2. AI-CLI 登录状态 ----------------
+check_ai_auth() {
+  hr
+  echo "${BOLD}AI-CLI 登录状态${NC}"
+  hr
 
-    local files
-    files="$(_find_backup_files)"
-    if [ -z "$files" ]; then
-        printf '\n  %s(无备份)%s\n' "$DIM" "$NC"
-        return 0
-    fi
-
-    printf '\n%s[Rust]%s\n' "$BOLD" "$NC"
-    local f sz
-    while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        sz="$(du -h "$f" 2>/dev/null | cut -f1)"
-        printf '  %s  %s(%s)%s\n' "$(basename "$f")" "$DIM" "$sz" "$NC"
-    done <<<"$files"
-}
-
-# ================================================================
-# 子命令: self-install
-# ================================================================
-cmd_self_install() {
-    local target_dir="${RUSTMGR_BIN_DIR:-$HOME/.local/bin}"
-    local target="$target_dir/$PROG_NAME"
-    local self="$SELF_PATH"
-
-    printf '\n%s=== rustmgr self-install ===%s\n' "$BOLD" "$NC"
-    log_info "源文件: $self"
-    log_info "目标:   $target"
-
-    [ -f "$self" ] || { log_error "找不到脚本源文件"; return 1; }
-
-    if [ -e "$target" ] && cmp -s "$self" "$target"; then
-        log_ok "已安装且内容一致，无需更新"
+  echo "${CYAN}[claude] Claude Code${NC}"
+  if have claude; then
+    if claude auth status 2>&1; then
+      echo "${GREEN}✓ claude 已登录${NC}"
     else
-        [ -e "$target" ] && log_warn "检测到旧版本，覆盖安装"
-        mkdir -p "$target_dir" || { log_error "创建目录失败: $target_dir"; return 1; }
-        cp -f "$self" "$target" || { log_error "复制失败: $target"; return 1; }
-        chmod +x "$target" || { log_error "设置执行权限失败"; return 1; }
-        log_ok "已安装: $target"
+      echo "${YELLOW}✗ claude 未登录，请运行: claude auth login（或首次运行 claude 按提示登录）${NC}"
     fi
+  else
+    echo "${RED}✗ 未安装 claude${NC}"; install_hint claude
+  fi
 
-    case ":$PATH:" in
-        *":$target_dir:"*) log_ok "$target_dir 已在 PATH 中" ;;
-        *) log_warn "$target_dir 不在 PATH 中，请添加:"; echo "  export PATH=\"$target_dir:\$PATH\"" ;;
-    esac
+  echo
+  echo "${CYAN}[opencode]${NC}"
+  if have opencode; then
+    if opencode auth list 2>&1; then
+      echo "${GREEN}✓ opencode 已配置${NC}"
+    else
+      echo "${YELLOW}✗ opencode 未登录，请运行: opencode auth login${NC}"
+    fi
+  else
+    echo "${RED}✗ 未安装 opencode${NC}"; install_hint opencode
+  fi
 
-    substep "验证: $PROG_NAME --version"
-    "$target" --version 2>/dev/null || true
-    log_ok "完成。现在可以直接使用: $PROG_NAME status"
+  echo
+  echo "${CYAN}[codex] OpenAI Codex CLI${NC}"
+  if have codex; then
+    if codex login status 2>&1; then
+      echo "${GREEN}✓ codex 已登录${NC}"
+    else
+      echo "${YELLOW}✗ codex 未登录，请运行: codex login${NC}"
+    fi
+  else
+    echo "${RED}✗ 未安装 codex${NC}"; install_hint codex
+  fi
 }
 
-# ================================================================
-# 帮助
-# ================================================================
-show_help() {
-    cat <<EOF
-${BOLD}rustmgr${NC} v${VERSION} - Rust 工具链管理器
-${DIM}(rustup / cargo)${NC}
+# ---------------- 3. AI-CLI 登录指引 ----------------
+ai_login_help() {
+  hr
+  echo "${BOLD}三大 AI-CLI 登录指引${NC}"
+  hr
+  cat <<'EOF'
+【claude — Claude Code】
+  1) 交互登录（推荐）：
+       claude auth login
+     或首次直接运行 claude，按提示完成 OAuth 登录。
+  2) 使用 API Key：
+       export ANTHROPIC_API_KEY="sk-ant-..."
+     也可写入 ~/.claude/settings.json 或项目环境变量。
+  3) 查看状态：
+       claude auth status
+  文档：https://docs.anthropic.com/en/docs/claude-code
 
-用法: ${BOLD}$PROG_NAME${NC} <command> [options]
+【opencode】
+  1) 登录 / 添加 provider：
+       opencode auth login
+     在菜单中选择 provider（anthropic / openai / openrouter / google 等），
+     按提示填入对应 API Key。
+  2) 查看已配置：
+       opencode auth list
+  3) 移除某个 provider：
+       opencode auth logout
+  文档：https://opencode.ai/docs
 
-命令:
-  ${BOLD}install${NC}   安装 Rust（前置检查已安装；优先本地备份恢复，否则在线安装）
-  ${BOLD}restore${NC}   从备份恢复 Rust（已安装时跳过，除非 --force）
-  ${BOLD}backup${NC}    备份 Rust 工具链与配置
-  ${BOLD}status${NC}    查看 Rust 安装状态、版本、备份数量
-  ${BOLD}list${NC}      列出可用的备份文件
-  ${BOLD}self-install${NC} 安装到 ~/.local/bin（别名: deploy）
-  ${BOLD}help${NC}      显示此帮助
-
-install 选项:
-  --force, -f         强制重装（清理已安装的工具链，保留 cargo 配置）
-  --no-restore        跳过本地备份恢复，直接在线安装
-  --no-modify-path    不自动修改 shell 的 PATH（改为写入 . "\$HOME/.cargo/env"）
-
-示例:
-  $PROG_NAME status
-  $PROG_NAME install
-  $PROG_NAME install --force
-  $PROG_NAME backup
-  $PROG_NAME restore --force
-  $PROG_NAME list
-
-备份内容:
-  ~/.rustup/                 工具链
-  ~/.cargo/config.toml       cargo 配置
-  ~/.cargo/credentials.toml  凭证
-  ~/.cargo/env               环境脚本
-  ~/.cargo/bin/              已安装的 cargo 子命令
-  ${DIM}~/.cargo/registry/ 与 ~/.cargo/git/ 为缓存目录，不备份${NC}
-
-环境变量:
-  RUSTMGR_BACKUP_DIR   备份目录 (默认: ~/.local/share/rustmgr/backups)
-  RUSTUP_HOME          rustup 目录 (默认: \$HOME/.rustup)
-  CARGO_HOME           cargo 目录 (默认: \$HOME/.cargo)
-  RUSTUP_INIT_URL      rustup 安装脚本 (默认: $RUSTUP_INIT_URL)
+【codex — OpenAI Codex CLI】
+  1) 使用 ChatGPT 账号登录（OAuth）：
+       codex login
+     浏览器打开提示的链接完成授权。
+  2) 使用 API Key：
+       codex login --api-key "$OPENAI_API_KEY"
+     或 export OPENAI_API_KEY="sk-..."
+  3) 查看状态：
+       codex login status
+  仓库：https://github.com/openai/codex
 EOF
 }
 
-# ================================================================
-# 主入口
-# ================================================================
-main() {
-    local cmd="${1:-}"
-    [ "$#" -gt 0 ] && shift
-
-    case "$cmd" in
-        install|i)           cmd_install  "$@" ;;
-        backup|b)            cmd_backup   "$@" ;;
-        restore|r|recover)   cmd_restore  "$@" ;;
-        status|st|s)         cmd_status   "$@" ;;
-        list|ls|l)           cmd_list     "$@" ;;
-        self-install|deploy) cmd_self_install "$@" ;;
-        help|-h|--help)      show_help ;;
-        version|-v|--version) printf '%s %s\n' "$PROG_NAME" "$VERSION" ;;
-        "")
-            show_help
-            return 1
-            ;;
-        *)
-            log_error "未知命令: $cmd"
-            show_help
-            return 1
-            ;;
-    esac
+# ---------------- 2 + 3 合并：检查状态并可选查看指引 ----------------
+check_ai_auth_and_help() {
+  check_ai_auth
+  echo
+  local ans
+  read -r -p "是否查看三大 AI-CLI 登录指引? [Y/n]: " ans
+  if [[ ! "$ans" =~ ^[Nn]$ ]]; then
+    ai_login_help
+  fi
 }
 
-main "$@"
+# ---------------- 4. Git 交互式操作 ----------------
+
+do_git_init() {
+  need_tools git || return 1
+  if [[ -d .git ]]; then
+    echo "${YELLOW}当前目录已经是 git 仓库，无需初始化${NC}"
+    return 0
+  fi
+  run git init
+}
+
+do_gh_create_clone() {
+  need_tools git gh || return 1
+  local name vis
+  read -r -p "新仓库名（例如 my-project）: " name
+  [[ -z "$name" ]] && return 0
+  read -r -p "可见性 [private/public]（默认 private）: " vis
+  vis=$(lower "${vis:-private}")
+  [[ "$vis" != "private" && "$vis" != "public" ]] && vis="private"
+  run gh repo create "$name" "--$vis" --clone
+}
+
+do_gh_create_template() {
+  need_tools git gh || return 1
+  local name tpl vis
+  read -r -p "新仓库名（例如 my-new-repo）: " name
+  [[ -z "$name" ]] && return 0
+  read -r -p "模板仓库 owner/template-repo: " tpl
+  [[ -z "$tpl" ]] && return 0
+  read -r -p "可见性 [private/public]（默认 public）: " vis
+  vis=$(lower "${vis:-public}")
+  [[ "$vis" != "private" && "$vis" != "public" ]] && vis="public"
+  run gh repo create "$name" --template "$tpl" "--$vis" --clone
+}
+
+do_commit_push() {
+  need_tools git || return 1
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "${RED}当前目录不是 git 仓库${NC}"
+    return 1
+  fi
+
+  echo "${CYAN}--- 当前分支 ---${NC}"
+  git branch -vv 2>&1 || true
+  echo "${CYAN}--- 当前远程仓库 ---${NC}"
+  git remote -v 2>&1 || true
+
+  local ans
+  read -r -p "是否将当前分支重命名/切换为 main? [y/N]: " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    run git branch -M main
+  fi
+
+  local msg
+  read -r -p "提交信息（默认 first commit）: " msg
+  msg=${msg:-first commit}
+
+  run git add .
+  if ! run git commit -m "$msg"; then
+    echo "${YELLOW}没有可提交的更改或提交失败（可忽略继续推送）${NC}"
+  fi
+
+  read -r -p "是否推送? [Y/n]: " ans
+  if [[ "$ans" =~ ^[Nn]$ ]]; then
+    return 0
+  fi
+
+  if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+    run git push
+  else
+    echo "${YELLOW}当前分支没有 upstream${NC}"
+    read -r -p "是否执行 git push -u origin main? [Y/n]: " ans
+    if [[ ! "$ans" =~ ^[Nn]$ ]]; then
+      run git push -u origin main
+    fi
+  fi
+}
+
+do_remote_add() {
+  need_tools git || return 1
+  local url ans
+  read -r -p "远程仓库地址（如 git@github.com:user/repo.git）: " url
+  [[ -z "$url" ]] && return 0
+
+  if git remote get-url origin >/dev/null 2>&1; then
+    echo "${YELLOW}origin 已存在: $(git remote get-url origin)${NC}"
+    read -r -p "是否替换为新的地址? [y/N]: " ans
+    [[ "$ans" =~ ^[Yy]$ ]] || return 0
+    run git remote set-url origin "$url"
+  else
+    run git remote add origin "$url"
+  fi
+
+  echo "${CYAN}提示：首次推送可用：git push -u origin main${NC}"
+}
+
+do_gh_create_push() {
+  need_tools git gh || return 1
+  local name vis
+  read -r -p "仓库名（例如 docs）: " name
+  [[ -z "$name" ]] && return 0
+  read -r -p "可见性 [private/public]（默认 public）: " vis
+  vis=$(lower "${vis:-public}")
+  [[ "$vis" != "private" && "$vis" != "public" ]] && vis="public"
+  run gh repo create "$name" "--$vis" --source=. --push
+}
+
+do_git_clone() {
+  need_tools git || return 1
+  local url dir
+  read -r -p "远程仓库地址（如 https://github.com/HanamiSakiP/AI.git）: " url
+  [[ -z "$url" ]] && return 0
+  read -r -p "本地目录名（留空则使用仓库名）: " dir
+  if [[ -n "$dir" ]]; then
+    run git clone "$url" "$dir"
+  else
+    run git clone "$url"
+  fi
+}
+
+do_gh_repo_clone() {
+  need_tools git gh || return 1
+  local repo dir
+  read -r -p "仓库（如 HanamiSakiP/AI 或 owner/repo）: " repo
+  [[ -z "$repo" ]] && return 0
+  read -r -p "本地目录名（留空则使用仓库名）: " dir
+  if [[ -n "$dir" ]]; then
+    run gh repo clone "$repo" "$dir"
+  else
+    run gh repo clone "$repo"
+  fi
+}
+
+do_git_update() {
+  need_tools git || return 1
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "${RED}当前目录不是 git 仓库${NC}"
+    return 1
+  fi
+
+  echo "${CYAN}--- 当前分支 ---${NC}"
+  git branch -vv 2>&1 || true
+
+  echo
+  echo "${CYAN}>>> git pull${NC}"
+  run git pull
+
+  echo
+  echo "${CYAN}>>> git submodule update --init --recursive${NC}"
+  run git submodule update --init --recursive
+
+  echo "${GREEN}✓ 更新完成${NC}"
+}
+
+git_menu() {
+  while true; do
+    echo
+    hr
+    echo "${BOLD}Git 交互式操作${NC}"
+    hr
+    echo "  ${GREEN}情况1：尚未创建本地/远程仓库${NC}"
+    echo "   1) 初始化本地仓库            (git init)"
+    echo "   2) 创建 GitHub 仓库并克隆    (gh repo create --clone)"
+    echo "   3) 基于模板创建仓库并克隆    (gh repo create --template ... --clone)"
+    echo
+    echo "  ${GREEN}通用：提交更改${NC}"
+    echo "   4) 查看分支/远程 → add → commit → push"
+    echo
+    echo "  ${GREEN}情况2：已有本地仓库，推送到远程${NC}"
+    echo "   5) 添加远程仓库 origin       (git remote add origin ...)"
+    echo "   6) 用 gh 从当前目录创建并推送 (gh repo create --source=. --push)"
+    echo
+    echo "  ${GREEN}情况3：已有远程仓库，下载到本地${NC}"
+    echo "   7) 使用 git clone 下载       (git clone <url>)"
+    echo "   8) 使用 gh repo clone 下载   (gh repo clone owner/repo)"
+    echo
+    echo "  ${GREEN}通用：更新已有仓库${NC}"
+    echo "   9) 更新 git 项目             (git pull + 子模块递归更新)"
+    echo
+    echo "   ${RED}10) 快速创建 git 项目并跳转  (~/.local/share/devmgr/<name>)${NC}"
+    echo "   ${RED}11) gh 查看 / 下载 Release${NC}"
+    echo
+    echo "   0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) do_git_init ;;
+      2) do_gh_create_clone ;;
+      3) do_gh_create_template ;;
+      4) do_commit_push ;;
+      5) do_remote_add ;;
+      6) do_gh_create_push ;;
+      7) do_git_clone ;;
+      8) do_gh_repo_clone ;;
+      9) do_git_update ;;
+      10) do_create_git_project ;;
+      11) do_gh_release_menu ;;
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
+}
+
+# ---------------- 5. @deepseek-ai/dsh 使用介绍 ----------------
+dsh_intro() {
+  hr
+  echo "${BOLD}@deepseek-ai/dsh —— DeepSeek Harness${NC}"
+  hr
+
+  echo "${RED}${BOLD}【一句话定位】${NC}"
+  echo "${RED}DeepSeek 官方开源的 Agent 框架，核心理念「一切皆插件」，对标 Claude Code。${NC}"
+  echo "${RED}MIT 协议，TypeScript 编写，支持 DeepSeek 及任意 OpenAI 兼容模型。${NC}"
+
+  echo
+  echo "${RED}${BOLD}【安装 / 启动】${NC}"
+  echo "${RED}快速体验（无需全局安装）：${NC}"
+  echo "  npx @deepseek-ai/dsh web"
+  echo "${RED}全局安装（推荐频繁使用）：${NC}"
+  echo "  npm install -g @deepseek-ai/dsh"
+  echo "${RED}要求 Node.js LTS（18+），首次运行会下载较大包（40+ 插件），耐心等待。${NC}"
+
+  echo
+  echo "${RED}${BOLD}【核心用法】${NC}"
+  echo "${RED}启动 Web UI（默认 http://127.0.0.1:3080）：${NC}"
+  echo "  dsh web"
+  echo "${RED}Headless 模式（执行一次性任务并输出结果）：${NC}"
+  echo '  dsh --profile headless "run the tests"'
+  echo "${RED}指定 Profile 启动：${NC}"
+  echo "  dsh --profile <name>"
+  echo "${RED}插件管理（一切皆插件，通过 pnpm 安装）：${NC}"
+  echo "  dsh plugin --profile web add <包名>"
+
+  echo
+  echo "${RED}${BOLD}【配置 API Key】${NC}"
+  echo "${RED}方式一：Web UI → Settings → Models，填入 DeepSeek Key。${NC}"
+  echo "${RED}方式二：写入 ~/.dsh/.credentials.yaml（权限 0600）。${NC}"
+  echo "${RED}方式三：启动目录下的 .env 文件。${NC}"
+
+  echo
+  echo "${RED}${BOLD}【入口模式速查】${NC}"
+  echo "${RED}dsh web${NC}                 → 启动 Web UI"
+  echo "${RED}dsh --profile headless${NC}  → 一次性任务，打印答案后退出"
+  echo "${RED}dsh --profile acp${NC}       → ACP 协议服务（自动化客户端）"
+  echo "${RED}dsh --profile sdk${NC}       → SDK 服务（JSON-RPC stdio）"
+  echo "${RED}dsh <name>${NC}              → 启动指定 profile"
+
+  echo
+  echo "${RED}${BOLD}【注意】${NC}"
+  echo "${RED}DSH 仍处于开发者预览阶段，可能有破坏性变更，使用前请阅读官方安全说明。${NC}"
+  echo "${RED}文档：https://github.com/deepseek-ai/deepseek-harness${NC}"
+}
+
+# ---------------- 6. rea-agents 使用介绍 ----------------
+rea_intro() {
+  hr
+  echo "${BOLD}rea-agents —— Reverse Engineer Anything${NC}"
+  hr
+
+  echo "${RED}${BOLD}【一句话定位】${NC}"
+  echo "${RED}本地运行的 MCP 服务 / CLI 工具，让 AI Agent 具备逆向分析能力。${NC}"
+  echo "${RED}可分析原生二进制、JavaScript/Electron 应用、.NET 程序集和网站，无需源码。${NC}"
+  echo "${RED}分析完全在本地进行，结果附带证据和局限性说明。${NC}"
+
+  echo
+  echo "${RED}${BOLD}【安装 / 初始化】${NC}"
+  echo "${RED}一条命令接入 AI Agent（自动写入 MCP 配置）：${NC}"
+  echo "  npx rea-agents setup"
+  echo "${RED}按提示选择要接入的 Agent（Claude Code / Codex / Cursor / Gemini CLI 等），${NC}"
+  echo "${RED}确认变更并批准，完成后重启对应 Agent。${NC}"
+  echo "${RED}要求 Node.js 较新版本（LTS 或更高）。${NC}"
+
+  echo
+  echo "${RED}${BOLD}【在 Agent 中使用】${NC}"
+  echo "${RED}接入后，直接在 AI 助手里用自然语言下达逆向任务，例如：${NC}"
+  echo '  "帮我用 REA 分析一下 XX 软件，看看 YY 功能是怎么实现的，给我看证据"'
+  echo '  "Understand how search works in Notes app, show me the evidence"'
+  echo "${RED}Agent 会通过 MCP 调用 REA，返回分析结果和证据链。${NC}"
+
+  echo
+  echo "${RED}${BOLD}【终端 CLI 用法】${NC}"
+  echo "${RED}全局安装（获得 rea 命令）：${NC}"
+  echo "  npm install --global rea-agents"
+  echo "${RED}一次性命令（无需全局安装）：${NC}"
+  echo "  npx -y rea-agents@latest analyze-javascript-application /absolute/path/to/app --json"
+  echo "${RED}该命令输出模块、导入关系、Electron 边界及其证据。${NC}"
+  echo "${RED}原生二进制分析需先配置 provider（Hopper / Ghidra / IDA 等）。${NC}"
+
+  echo
+  echo "${RED}${BOLD}【适用与不适用】${NC}"
+  echo "${RED}✅ 无源码时理解软件功能、追踪实现、学习研究、排查自有程序。${NC}"
+  echo "${RED}❌ 有源码的项目不要用 REA（直接读源码更高效）。${NC}"
+  echo "${RED}⚠️ 仅用于学习、研究和对自有程序的排查，不得用于未授权的商业复制或攻击。${NC}"
+
+  echo
+  echo "${RED}${BOLD}【保持更新】${NC}"
+  echo "${RED}REA 迭代很快，定期更新：${NC}"
+  echo "  rea update"
+  echo "${RED}更新后重新运行 setup 以刷新 Agent 注册：${NC}"
+  echo "  npx rea-agents@latest setup"
+  echo "${RED}文档：https://rea.tools/  |  https://github.com/morluto/rea${NC}"
+}
+
+# ---------------- 5. AI 工具介绍（合并 dsh + rea-agents） ----------------
+ai_tools_intro() {
+  while true; do
+    echo
+    hr
+    echo "${BOLD}AI 工具介绍${NC}"
+    hr
+    echo "  1) @deepseek-ai/dsh 使用介绍"
+    echo "  2) rea-agents 使用介绍"
+    echo "  0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) dsh_intro ;;
+      2) rea_intro ;;
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
+}
+
+# ---------------- 6. 快速找到所有 git 项目 ----------------
+do_find_git_projects() {
+  need_tools find fzf || return 1
+  local root dir ans
+  read -r -p "搜索根目录（留空则搜索全部目录 /，可能较慢）: " root
+  root=${root:-/}
+
+  echo "${CYAN}正在搜索 ${root} 下的 git 项目（要求含 README.md）...${NC}"
+  dir=$(find "$root" -name .git 2>/dev/null \
+    | sed 's|/\.git$||' \
+    | while IFS= read -r d; do
+        [ -f "$d/README.md" ] && echo "$d"
+      done \
+    | sort -u \
+    | fzf --prompt="选择 git 项目 > ")
+
+  if [[ -z "$dir" ]]; then
+    echo "${YELLOW}未选择或未找到符合条件的项目（需要含 README.md）${NC}"
+    return 0
+  fi
+
+  if is_sourced; then
+    cd "$dir" || return 1
+    echo "${GREEN}✓ 当前 shell 已切换到: $(pwd)${NC}"
+    read -r -p "是否进入 Git 交互式操作菜单? [y/N]: " ans
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      git_menu
+    fi
+  else
+    echo "${CYAN}目标目录: $dir${NC}"
+    read -r -p "是否进入该目录的新 shell?（exit 后回原 shell）[Y/n]: " ans
+    if [[ ! "$ans" =~ ^[Nn]$ ]]; then
+      cd "$dir" || return 1
+      echo "${GREEN}✓ 进入新 shell: $(pwd)（输入 exit 返回原 shell）${NC}"
+      exec "${SHELL:-bash}" -i
+    fi
+    echo "${YELLOW}提示：直接执行脚本无法改变父 shell 的目录。${NC}"
+    echo "${YELLOW}  手动切换：cd $(printf '%q' "$dir")${NC}"
+    echo "${YELLOW}  或改用：  source $0   （让 devkit 里的 cd 直接生效）${NC}"
+  fi
+}
+
+# ---------------- 7. 快速创建 git 项目并跳转 ----------------
+do_create_git_project() {
+  need_tools git || return 1
+  local base="${HOME}/.local/share/devmgr"
+  local name dir ans
+
+  read -r -p "项目名（默认 demo）: " name
+  name=${name:-demo}
+
+  if [[ "$name" == */* || "$name" == "." || "$name" == ".." ]]; then
+    echo "${RED}项目名不能包含 '/' 或为 . / ..${NC}"
+    return 1
+  fi
+
+  dir="${base}/${name}"
+  mkdir -p "$dir" || return 1
+  cd "$dir" || return 1
+
+  if [[ -d .git ]]; then
+    echo "${YELLOW}已是 git 仓库，跳过 git init${NC}"
+  else
+    run git init
+  fi
+
+  if [[ -f README.md ]]; then
+    echo "${YELLOW}README.md 已存在，跳过创建${NC}"
+  else
+    echo > README.md
+    echo "${GREEN}✓ 已创建 README.md${NC}"
+  fi
+
+  echo "${GREEN}✓ 项目目录: $(pwd)${NC}"
+
+  if is_sourced; then
+    read -r -p "是否进入 Git 交互式操作菜单? [y/N]: " ans
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      git_menu
+    fi
+  else
+    read -r -p "是否进入该目录的新 shell?（exit 后回原 shell）[Y/n]: " ans
+    if [[ ! "$ans" =~ ^[Nn]$ ]]; then
+      echo "${GREEN}✓ 进入新 shell: $(pwd)（输入 exit 返回原 shell）${NC}"
+      exec "${SHELL:-bash}" -i
+    fi
+    echo "${YELLOW}提示：直接执行脚本无法改变父 shell 的目录。${NC}"
+    echo "${YELLOW}  手动切换：cd $(printf '%q' "$dir")${NC}"
+    echo "${YELLOW}  或改用：  source $0   （让 devkit 里的 cd 直接生效）${NC}"
+  fi
+}
+
+# ---------------- 7+. 本地 git 项目快捷操作（合并查找 + 创建） ----------------
+local_git_project_menu() {
+  while true; do
+    echo
+    hr
+    echo "${BOLD}本地 git 项目快捷操作${NC}"
+    hr
+    echo "  ${RED}1) 快速找到所有 git 项目并跳转  (fzf)${NC}"
+    echo "  ${RED}2) 快速创建 git 项目并跳转  (~/.local/share/devmgr/<name>)${NC}"
+    echo
+    echo "  0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) do_find_git_projects ;;
+      2) do_create_git_project ;;
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
+}
+
+# ---------------- 8. gh 仓库 / 星标 / Release 管理 ----------------
+
+# 询问目标仓库（优先当前仓库），结果写到 stdout
+ask_gh_repo() {
+  local repo="" input
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+  fi
+  if [[ -n "$repo" ]]; then
+    read -r -p "目标仓库 [默认 ${repo}，回车沿用当前仓库]: " input
+    [[ -n "$input" ]] && repo="$input"
+  else
+    read -r -p "目标仓库（owner/repo，必填）: " input
+    repo="$input"
+  fi
+  printf '%s' "$repo"
+}
+
+# 查看自己（或指定用户）的仓库列表
+do_gh_repo_list() {
+  need_tools gh || return 1
+  local user limit
+  local -a cmd=(gh repo list)
+  read -r -p "用户名（留空 = 你自己）: " user
+  read -r -p "数量上限（0 = 全部，默认 30）: " limit
+  limit=${limit:-30}
+  [[ -n "$user" ]] && cmd+=("$user")
+  cmd+=(--limit "$limit")
+  echo "${CYAN}>>> ${cmd[*]}${NC}"
+  "${cmd[@]}" || true
+}
+
+# 查看已星标集合（GitHub Lists）名称
+do_gh_starred_lists() {
+  need_tools gh || return 1
+  local q='{ viewer { lists(first: 100) { nodes { name } } } }'
+  local jq='.data.viewer.lists.nodes[].name'
+  echo "${CYAN}>>> gh api graphql -f query='${q}' --jq '${jq}'${NC}"
+  gh api graphql -f query="$q" --jq "$jq" || true
+}
+
+# 查看某个星标集合里的项目
+do_gh_starred_list_items() {
+  need_tools gh || return 1
+  local list jq
+  read -r -p "星标集合名称（如 game）: " list
+  [[ -z "$list" ]] && return 0
+
+  local q='
+query {
+  viewer {
+    lists(first: 100) {
+      nodes {
+        name
+        items(first: 100) {
+          nodes {
+            ... on Repository {
+              nameWithOwner
+            }
+          }
+        }
+      }
+    }
+  }
+}'
+  jq=".data.viewer.lists.nodes[] | select(.name == \"${list}\") | .items.nodes[].nameWithOwner"
+  echo "${CYAN}>>> gh api graphql -f query='{...}' --jq \"${jq}\"${NC}"
+  gh api graphql -f query="$q" --jq "$jq" || true
+}
+
+# --- Release 管理 ---
+
+do_gh_release_list() {
+  need_tools git gh || return 1
+  local repo
+  repo=$(ask_gh_repo)
+  [[ -z "$repo" ]] && return 1
+  local cmd=(gh release list -R "$repo")
+  echo "${CYAN}>>> ${cmd[*]}${NC}"
+  "${cmd[@]}" || true
+}
+
+do_gh_release_view() {
+  need_tools git gh || return 1
+  local repo tag ans cmd
+  repo=$(ask_gh_repo)
+  [[ -z "$repo" ]] && return 1
+  read -r -p "Tag（留空 = 最新 Release）: " tag
+  cmd=(gh release view)
+  [[ -n "$tag" ]] && cmd+=("$tag")
+  cmd+=(-R "$repo")
+  echo "${CYAN}>>> ${cmd[*]}${NC}"
+  "${cmd[@]}" || true
+
+  read -r -p "是否在浏览器中打开? [y/N]: " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    cmd+=(--web)
+    echo "${CYAN}>>> ${cmd[*]}${NC}"
+    "${cmd[@]}" || true
+  fi
+}
+
+do_gh_release_download() {
+  need_tools git gh || return 1
+  local repo tag dir clobber use_pattern pattern cmd dl_dir view_tag assets_raw asset
+  local -a expected_assets=()
+  repo=$(ask_gh_repo)
+  [[ -z "$repo" ]] && return 1
+
+  read -r -p "Tag（留空 = 最新 Release）: " tag
+  read -r -p "是否按文件名筛选资产（--pattern）? [y/N]: " use_pattern
+  pattern=""
+  if [[ "$use_pattern" =~ ^[Yy]$ ]]; then
+    read -r -p "文件名 glob 模式（如 *.tar.gz，直接回车 = 全部资产）: " pattern
+  fi
+  read -r -p "下载目录（默认当前目录）: " dir
+  read -r -p "覆盖已存在文件（--clobber）? [y/N]: " clobber
+
+  cmd=(gh release download)
+  [[ -n "$tag" ]] && cmd+=("$tag")
+
+  if [[ -n "$pattern" ]]; then
+    cmd+=(--pattern "$pattern")
+  elif [[ -z "$tag" ]]; then
+    cmd+=(--pattern '*')
+    echo "${YELLOW}提示：下载最新 Release 时 gh 要求必须指定 --pattern，已自动使用 '*'（匹配全部资产）${NC}"
+  fi
+
+  [[ -n "$dir" ]] && cmd+=(--dir "$dir")
+  [[ "$clobber" =~ ^[Yy]$ ]] && cmd+=(--clobber)
+  cmd+=(-R "$repo")
+
+  dl_dir="${dir:-.}"
+  view_tag="$tag"
+  if [[ -z "$view_tag" ]]; then
+    view_tag=$(gh release view -R "$repo" --json tagName -q .tagName 2>/dev/null || true)
+  fi
+  if [[ -n "$view_tag" ]]; then
+    assets_raw=$(gh release view "$view_tag" -R "$repo" --json assets -q '.assets[].name' 2>/dev/null || true)
+    if [[ -n "$assets_raw" ]]; then
+      while IFS= read -r asset; do
+        [[ -z "$asset" ]] && continue
+        if [[ -n "$pattern" ]]; then
+          # shellcheck disable=SC2053
+          if [[ "$asset" == $pattern ]]; then
+            expected_assets+=("$asset")
+          fi
+        else
+          expected_assets+=("$asset")
+        fi
+      done <<< "$assets_raw"
+    fi
+  fi
+
+  echo "${CYAN}>>> ${cmd[*]}${NC}"
+  if "${cmd[@]}"; then
+    echo
+    echo "${GREEN}✓✓✓ 下载成功 ✓✓✓${NC}"
+    local abs_dir
+    abs_dir=$(cd "$dl_dir" 2>/dev/null && pwd) || abs_dir="$dl_dir"
+    echo "下载目录: ${abs_dir}"
+    echo "本次下载文件:"
+    local found_any=0
+    if (( ${#expected_assets[@]} > 0 )); then
+      local f line
+      for asset in "${expected_assets[@]}"; do
+        f="${dl_dir}/${asset}"
+        if [[ -f "$f" ]]; then
+          while IFS= read -r line; do
+            printf '%s%s%s\n' "${RED}" "$line" "${NC}"
+          done < <(ls -lh "$f")
+          found_any=1
+        fi
+      done
+    fi
+    if (( found_any == 0 )); then
+      if [[ -n "$pattern" ]]; then
+        while IFS= read -r f; do
+          [[ -z "$f" ]] && continue
+          while IFS= read -r line; do
+            printf '%s%s%s\n' "${RED}" "$line" "${NC}"
+          done < <(ls -lh "$f")
+        done < <(find "$dl_dir" -maxdepth 1 -type f -name "$pattern" 2>/dev/null)
+      else
+        while IFS= read -r line; do
+          printf '%s%s%s\n' "${RED}" "$line" "${NC}"
+        done < <(ls -lh "$dl_dir" 2>/dev/null)
+      fi
+    fi
+  else
+    echo
+    echo "${RED}✗✗✗ 下载失败！${NC}"
+    echo "${YELLOW}请检查：Tag 是否存在 / pattern 是否匹配 / 网络与权限${NC}"
+  fi
+}
+
+do_gh_repo_menu() {
+  need_tools git gh || return 1
+  while true; do
+    echo
+    hr
+    echo "${BOLD}gh 仓库 / 星标 / Release 管理${NC}"
+    hr
+    echo "${CYAN}--- 仓库列表 ---${NC}"
+    echo "  1) 查看自己的仓库列表              (gh repo list)"
+    echo "  2) 查看已星标集合（Lists）名称"
+    echo "  3) 查看星标集合内的项目"
+    echo
+    echo "${CYAN}--- Release 管理（需指定仓库）---${NC}"
+    echo "  4) 列出所有 Release"
+    echo "  5) 查看 Release 详情"
+    echo "  6) 下载 Release 资产"
+    echo
+    echo "  0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) do_gh_repo_list ;;
+      2) do_gh_starred_lists ;;
+      3) do_gh_starred_list_items ;;
+      4) do_gh_release_list ;;
+      5) do_gh_release_view ;;
+      6) do_gh_release_download ;;
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
+}
+
+# ---------------- 9. rclone 快捷操作 ----------------
+
+rclone_login_help() {
+  hr
+  echo "${BOLD}rclone 登录配置指引${NC}"
+  hr
+  cat <<'EOF'
+【以 Dropbox 为例】
+  1) 运行 rclone config
+  2) 输入 n 新建 remote
+  3) 输入名字（例如 k）
+  4) 选择服务类型 dropbox（输入对应编号或 dropbox）
+  5) client_id、client_secret 直接回车（使用默认）
+  6) 是否编辑高级配置：n
+  7) 是否自动配置（浏览器 OAuth）：y
+  8) 浏览器打开授权页面，登录 Dropbox 并允许授权
+  9) 回到终端确认 y，完成配置
+
+【其它常见服务】
+  Google Drive    → drive
+  OneDrive        → onedrive
+  S3 兼容（R2/B2）→ s3
+  WebDAV（坚果云）→ webdav
+  SFTP            → sftp
+
+【常用命令】
+  rclone listremotes              列出所有 remote
+  rclone ls  <remote>:<path>      列出文件（含大小）
+  rclone lsd <remote>:<path>      仅列目录
+  rclone lsf <remote>:<path>      简洁列表（脚本友好）
+  rclone copy <src> <dst>         复制（不删除目标多余文件）
+  rclone sync <src> <dst>         同步（会删除目标多余文件，危险，务必先 --dry-run）
+EOF
+}
+
+do_rclone_config() {
+  need_tools rclone || return 1
+  run rclone config
+}
+
+do_rclone_listremotes() {
+  need_tools rclone || return 1
+  run rclone listremotes
+}
+
+do_rclone_ls() {
+  need_tools rclone || return 1
+  local remote path mode target
+  read -r -p "remote 名（默认 k）: " remote
+  remote=${remote:-k}
+  read -r -p "路径（默认 backups）: " path
+  path=${path:-backups}
+  read -r -p "模式 [1=ls 文件 2=lsd 仅目录 3=lsf 简洁]（默认 1）: " mode
+
+  target="${remote}:${path}"
+  case "$mode" in
+    2) run rclone lsd "$target" ;;
+    3) run rclone lsf "$target" ;;
+    *) run rclone ls "$target" ;;
+  esac
+}
+
+do_rclone_copy() {
+  need_tools rclone || return 1
+  local src dst
+  read -r -p "源（默认 k:backups）: " src
+  src=${src:-k:backups}
+  read -r -p "目标（默认 ~/.local/share/devmgr/）: " dst
+  dst=${dst:-~/.local/share/devmgr/}
+  dst=$(expand_tilde "$dst")
+  run rclone copy "$src" "$dst" --progress
+}
+
+do_rclone_sync() {
+  need_tools rclone || return 1
+  local src dst ans
+  read -r -p "源（默认 ~/.local/share/devmgr/）: " src
+  src=${src:-~/.local/share/devmgr/}
+  src=$(expand_tilde "$src")
+  read -r -p "目标（默认 k:backups）: " dst
+  dst=${dst:-k:backups}
+  read -r -p "是否执行真实同步（会删除目标多余文件！）[y/N]: " ans
+
+  local cmd=(rclone sync "$src" "$dst" --progress)
+  if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+    cmd+=(--dry-run)
+    echo "${YELLOW}已启用 --dry-run 模拟执行${NC}"
+  fi
+  echo "${CYAN}>>> ${cmd[*]}${NC}"
+  "${cmd[@]}"
+}
+
+# ---------------- restic 快捷操作 ----------------
+# 默认 restic 仓库与默认备份源目录，可通过环境变量覆盖
+RESTIC_REPO="${RESTIC_REPO:-$HOME/.local/share/devmgr/restic}"
+RESTIC_BACKUP_DIR="${RESTIC_BACKUP_DIR:-$HOME/.local/share/devmgr/backups}"
+
+# 每次操作前询问仓库路径，回车使用默认 RESTIC_REPO
+ask_restic_repo() {
+  local repo
+  read -r -p "restic 仓库路径（默认 ${RESTIC_REPO}，回车沿用）: " repo
+  repo=${repo:-$RESTIC_REPO}
+  repo=$(expand_tilde "$repo")
+  printf '%s' "$repo"
+}
+
+do_restic_init() {
+  need_tools restic || return 1
+  local repo
+  repo=$(ask_restic_repo)
+  if [[ -d "$repo" ]]; then
+    echo "${YELLOW}restic 仓库已存在: $repo${NC}"
+    return 0
+  fi
+  run restic -r "$repo" init
+}
+
+do_restic_snapshots() {
+  need_tools restic || return 1
+  local repo
+  repo=$(ask_restic_repo)
+  run restic -r "$repo" snapshots
+}
+
+do_restic_ls() {
+  need_tools restic || return 1
+  local repo id
+  repo=$(ask_restic_repo)
+  read -r -p "快照 ID（留空 = latest）: " id
+  id=${id:-latest}
+  run restic -r "$repo" ls "$id"
+}
+
+do_restic_ls_path() {
+  need_tools restic || return 1
+  local repo id path
+  repo=$(ask_restic_repo)
+  read -r -p "快照 ID（留空 = latest）: " id
+  id=${id:-latest}
+  read -r -p "路径（例如 backups/g，留空 = 全部）: " path
+  if [[ -n "$path" ]]; then
+    run restic -r "$repo" ls "$id" --path "$path"
+  else
+    run restic -r "$repo" ls "$id"
+  fi
+}
+
+do_restic_restore_include() {
+  need_tools restic || return 1
+  local repo id target include
+  repo=$(ask_restic_repo)
+  read -r -p "快照 ID（留空 = latest）: " id
+  id=${id:-latest}
+  read -r -p "恢复目标目录（--target，默认 restore）: " target
+  target=${target:-restore}
+  read -r -p "包含路径（--include，默认 ${RESTIC_BACKUP_DIR}）: " include
+  include=${include:-$RESTIC_BACKUP_DIR}
+  include=$(expand_tilde "$include")
+  run restic -r "$repo" restore "$id" --target "$target" --include "$include"
+}
+
+do_restic_restore_all() {
+  need_tools restic || return 1
+  local repo id target
+  repo=$(ask_restic_repo)
+  read -r -p "快照 ID（留空 = latest）: " id
+  id=${id:-latest}
+  read -r -p "恢复目标目录（--target，默认 restore）: " target
+  target=${target:-restore}
+  run restic -r "$repo" restore "$id" --target "$target"
+}
+
+do_restic_backup() {
+  need_tools restic || return 1
+  local repo path
+  repo=$(ask_restic_repo)
+  read -r -p "要备份的路径（默认 ${RESTIC_BACKUP_DIR}）: " path
+  path=${path:-$RESTIC_BACKUP_DIR}
+  path=$(expand_tilde "$path")
+  run restic -r "$repo" backup "$path"
+}
+
+rclone_restic_menu() {
+  while true; do
+    echo
+    hr
+    echo "${BOLD}rclone / restic 快捷操作${NC}"
+    hr
+    echo "${CYAN}--- rclone ---${NC}"
+    echo "  1) 登录 / 添加 remote 配置   (rclone config)"
+    echo "  2) 查看 rclone 登录配置指引"
+    echo "  ${RED}3) 列出所有已配置 remote     (rclone listremotes)${NC}"
+    echo "  4) 查看 remote 内容（ls/lsd/lsf，默认 k:backups）"
+    echo "  ${RED}5) 从 remote 复制到本地      (rclone copy，默认 k:backups → ~/.local/share/devmgr/)${NC}"
+    echo "  ${RED}6) 从本地同步到 remote       (rclone sync，默认 ~/.local/share/devmgr/ → k:backups，默认 --dry-run)${NC}"
+    echo
+    echo "${CYAN}--- restic（默认仓库: ${RESTIC_REPO}，默认备份源: ${RESTIC_BACKUP_DIR}）---${NC}"
+    echo "  7) 初始化 restic 仓库        (restic init)"
+    echo "  ${RED}8) 查看快照列表              (restic snapshots)${NC}"
+    echo "  ${RED}9) 查看快照内容（全部）      (restic ls ID)${NC}"
+    echo "  10) 查看快照某个内容         (restic ls ID --path ...)"
+    echo "  11) 恢复快照中某个内容到本地 (restic restore latest --target ... --include ...)"
+    echo "  12) 恢复快照中所有文件到本地 (restic restore latest --target ...)"
+    echo "  ${RED}13) 使用 restic 仓库备份     (restic backup ${RESTIC_BACKUP_DIR})${NC}"
+    echo
+    echo "  0) 返回上级"
+    read -r -p "请选择: " c
+    case "$c" in
+      1) do_rclone_config ;;
+      2) rclone_login_help ;;
+      3) do_rclone_listremotes ;;
+      4) do_rclone_ls ;;
+      5) do_rclone_copy ;;
+      6) do_rclone_sync ;;
+      7) do_restic_init ;;
+      8) do_restic_snapshots ;;
+      9) do_restic_ls ;;
+      10) do_restic_ls_path ;;
+      11) do_restic_restore_include ;;
+      12) do_restic_restore_all ;;
+      13) do_restic_backup ;;
+      0|q|Q) return 0 ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+    echo
+    read -r -p "按回车继续..." _
+  done
+}
+
+# ---------------- 主菜单 ----------------
+main_menu() {
+  while true; do
+    echo
+    hr
+    echo "${BOLD}开发环境工具箱${NC}"
+    hr
+    echo "${RED}1) 检查 Git 远程仓库登录状态  (gh / glab)${NC}"
+    echo "2) 检查 AI-CLI 登录状态 + 查看登录指引  (claude / opencode / codex)"
+    echo "${RED}3) Git 交互式操作${NC}"
+    echo "4) AI 工具介绍  (dsh / rea-agents)"
+    echo "${RED}5) 本地 git 项目快捷操作  (查找 / 创建 并跳转)${NC}"
+    echo "${RED}6) gh 仓库列表 / 星标集合 / Release 管理${NC}"
+    echo "${RED}7) rclone / restic 快捷操作  (config / list / copy / sync / snapshots / restore / backup)${NC}"
+    echo "8) 全部检查（1 + 2）"
+    echo "0) 退出"
+    read -r -p "请选择: " choice
+    case "$choice" in
+      1) check_git_auth ;;
+      2) check_ai_auth_and_help ;;
+      3) git_menu ;;
+      4) ai_tools_intro ;;
+      5) local_git_project_menu ;;
+      6) do_gh_repo_menu ;;
+      7) rclone_restic_menu ;;
+      8) check_git_auth; echo; check_ai_auth ;;
+      0|q|Q)
+        echo "Bye."
+        if is_sourced; then
+          return 0
+        else
+          exit 0
+        fi
+        ;;
+      *) echo "${RED}无效选项${NC}" ;;
+    esac
+  done
+}
+
+# ---------------- 入口 ----------------
+preflight_check
+main_menu
