@@ -52,6 +52,10 @@ cargo install --list
 cargo install --locked starship
 cargo install --locked navi
 cargo install --locked zellij
+cargo install --locked zoxide
+cargo install bluetui
+cargo install abtop
+cargo install fd-find
 cargo install jj-cli
 cargo install lsd
 cargo install binsider
@@ -64,6 +68,7 @@ cargo install --git https://github.com/ekzhang/sshx --bin sshx
 ```
 ```bash
 eval "$(starship init bash)"
+eval "$(zoxide init bash)"
 function y() {
 local tmp cwd; tmp="$(mktemp -t "yazi-cwd.XXXXXX")"
 command yazi "$@" --cwd-file="$tmp"
