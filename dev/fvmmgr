@@ -1,0 +1,762 @@
+#!/usr/bin/env bash
+# fvmmgr - FVM (Flutter Version Manager) 管理器
+# 支持 fvm 的安装、备份、恢复
+#
+# 安装: cp fvmmgr ~/.local/bin/fvmmgr && chmod +x ~/.local/bin/fvmmgr
+# 或:   ln -sf "$(pwd)/fvmmgr" ~/.local/bin/fvmmgr
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="1.0.0"
+PROG_NAME="${0##*/}"
+
+# ================================================================
+# 路径解析（支持软链接调用）
+# ================================================================
+resolve_script_dir() {
+    local src="${BASH_SOURCE[0]}" dir
+    while [ -L "$src" ]; do
+        dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+        src="$(readlink "$src")"
+        [[ "$src" != /* ]] && src="$dir/$src"
+    done
+    cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd
+}
+SCRIPT_DIR="$(resolve_script_dir)"
+SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+[ -n "$SELF_PATH" ] || SELF_PATH="$SCRIPT_DIR/$PROG_NAME"
+
+BACKUP_DIR="${FVMMGR_BACKUP_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/fvmmgr/backups}"
+
+# ================================================================
+# FVM 路径
+# ================================================================
+# FVM_CACHE_PATH 是当前主环境变量；FVM_HOME 是遗留回退变量
+FVM_CACHE_PATH="${FVM_CACHE_PATH:-${FVM_HOME:-$HOME/fvm}}"
+FVM_INSTALL_DIR="${FVM_INSTALL_DIR:-$HOME/fvm}"
+FVM_BIN="$FVM_INSTALL_DIR/bin"
+
+FVM_INSTALL_URL="${FVMMGR_INSTALL_URL:-https://fvm.app/install.sh}"
+
+# ================================================================
+# 颜色 & 日志
+# ================================================================
+if [ -t 1 ]; then
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'
+    BLUE=$'\033[0;34m'; CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; NC=$'\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; DIM=''; NC=''
+fi
+
+log_info()  { printf '%s[INFO]%s %s\n' "$CYAN"  "$NC" "$*"; }
+log_ok()    { printf '%s[ OK ]%s %s\n' "$GREEN" "$NC" "$*"; }
+log_warn()  { printf '%s[WARN]%s %s\n' "$YELLOW" "$NC" "$*" >&2; }
+log_error() { printf '%s[ERR ]%s %s\n' "$RED"   "$NC" "$*" >&2; }
+
+substep() { printf '      %s→%s %s\n' "$DIM" "$NC" "$*"; }
+
+# ================================================================
+# tar 能力检测
+# ================================================================
+TAR_WARN_OPTS=()
+if tar --warning=no-file-changed -cf /dev/null /dev/null >/dev/null 2>&1; then
+    TAR_WARN_OPTS=(--warning=no-file-changed)
+else
+    log_warn "当前 tar 不支持 --warning=no-file-changed（将容忍 rc=1）"
+fi
+
+TAR_EXTRA_OPTS=()
+if tar --ignore-failed-read -cf /dev/null /dev/null >/dev/null 2>&1; then
+    TAR_EXTRA_OPTS=(--ignore-failed-read)
+else
+    log_warn "当前 tar 不支持 --ignore-failed-read（ELOOP 等读错误会中断）"
+fi
+
+# ================================================================
+# 排除模式
+# ================================================================
+EXCLUDES=(
+    '--exclude=.git' '--exclude=.github' '--exclude=.gitignore'
+    '--exclude=.cache'
+    '--exclude=tmp' '--exclude=temp'
+    '--exclude=*.log'
+)
+
+# FVM 缓存内的不必要/可重建内容
+FVM_CACHE_EXCLUDES=(
+    '--exclude=versions/*/bin/cache/artifacts'   # 可重新下载的引擎产物
+    '--exclude=versions/*/bin/cache/engine'       # 引擎缓存
+)
+
+# ================================================================
+# FVM 状态检测
+# ================================================================
+is_fvm_installed() {
+    [ -x "$FVM_BIN/fvm" ] && return 0
+    command -v fvm >/dev/null 2>&1
+}
+
+fvm_bin() {
+    if [ -x "$FVM_BIN/fvm" ]; then
+        printf '%s\n' "$FVM_BIN/fvm"
+    elif command -v fvm >/dev/null 2>&1; then
+        command -v fvm
+    fi
+}
+
+fvm_version() {
+    local bin
+    bin="$(fvm_bin)" || return 0
+    "$bin" --version 2>/dev/null | head -n1
+}
+
+# 从 fvm list 输出中提取缓存目录
+fvm_cache_dir() {
+    local bin output
+    bin="$(fvm_bin)" || { printf '%s\n' "$FVM_CACHE_PATH"; return 0; }
+    output="$("$bin" list 2>/dev/null || true)"
+    printf '%s\n' "$output" | sed -n 's/^Cache directory:[[:space:]]*//p' | head -n1
+}
+
+# ================================================================
+# 依赖 & 磁盘检查
+# ================================================================
+check_dependencies() {
+    local dep
+    for dep in curl tar; do
+        command -v "$dep" >/dev/null 2>&1 || { log_error "缺少必需依赖: $dep"; exit 1; }
+    done
+    [ -w "$HOME" ] || { log_error "用户目录 '$HOME' 不可写"; exit 1; }
+}
+
+check_disk() {
+    local avail_kb
+    avail_kb=$(df -Pk "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || true)
+    if [ -n "${avail_kb:-}" ] && [ "$avail_kb" -lt 204800 ]; then
+        log_warn "备份目录剩余空间较小（${avail_kb}KB），备份可能失败"
+    fi
+}
+
+# ================================================================
+# 配置文件辅助
+# ================================================================
+add_line_if_missing() {
+    local file="$1" line="$2"
+    touch "$file"
+    if ! grep -Fqx -- "$line" "$file"; then
+        printf '%s\n' "$line" >> "$file"
+        substep "写入 $file: $line"
+    fi
+}
+
+# ================================================================
+# 下载辅助
+# ================================================================
+download_file() {
+    local url="$1" out="$2"
+    substep "下载: $url"
+    local -a curl_opts=( -fL --retry 3 --retry-delay 2 --connect-timeout 15 )
+    if [ -t 2 ]; then
+        curl_opts+=( --progress-bar )
+    else
+        curl_opts+=( -sS )
+    fi
+    curl "${curl_opts[@]}" "$url" -o "$out"
+}
+
+# ================================================================
+# 进度执行
+# ================================================================
+_run_progress() {
+    local desc="$1" logfile="$2"; shift 2
+    local chars=('/' '-' '\' '|') i=0 pid rc=0
+    "$@" >"$logfile" 2>&1 &
+    pid=$!
+    if [ -t 1 ]; then
+        while kill -0 "$pid" 2>/dev/null; do
+            printf '\r  %s[%s]%s %s  ' "$BLUE" "${chars[i++%4]}" "$NC" "$desc"
+            sleep 0.15
+        done
+    fi
+    wait "$pid" || rc=$?
+    if [ -t 1 ]; then
+        if [ "$rc" -eq 0 ]; then
+            printf '\r  %s[✓]%s %-50s\n' "$GREEN" "$NC" "$desc"
+        else
+            printf '\r  %s[✗]%s %-50s\n' "$RED" "$NC" "$desc"
+        fi
+    fi
+    if [ "$rc" -ne 0 ]; then
+        log_warn "命令输出（末尾）:"
+        sed 's/^/      | /' "$logfile" | tail -n 30 >&2
+    fi
+    return "$rc"
+}
+
+# ================================================================
+# 在线安装 FVM
+# ================================================================
+install_fvm_online() {
+    local install_script
+
+    install_script="$(mktemp)"
+    substep "获取 FVM 安装脚本"
+    if ! download_file "$FVM_INSTALL_URL" "$install_script"; then
+        rm -f "$install_script"
+        log_error "下载 FVM 安装脚本失败"
+        return 1
+    fi
+
+    local logfile rc=0
+    logfile="$(mktemp)"
+    _run_progress "执行 FVM 安装脚本" "$logfile" \
+        env "FVM_INSTALL_DIR=$FVM_INSTALL_DIR" \
+        "FVM_CACHE_PATH=$FVM_CACHE_PATH" \
+        sh "$install_script" || rc=$?
+
+    rm -f "$install_script" "$logfile"
+
+    if [ "$rc" -ne 0 ]; then
+        log_error "FVM 安装失败"
+        return 1
+    fi
+
+    # ---- 环境变量写入 ----
+    local cfg_files=("$HOME/.bashrc" "$HOME/.profile" "$HOME/.zshrc")
+    local f
+    for f in "${cfg_files[@]}"; do
+        [ -f "$f" ] || continue
+        add_line_if_missing "$f" "export PATH=\"$FVM_BIN:\$PATH\""
+        if [ "$FVM_CACHE_PATH" != "$HOME/fvm" ]; then
+            add_line_if_missing "$f" "export FVM_CACHE_PATH=\"$FVM_CACHE_PATH\""
+        fi
+    done
+
+    export PATH="$FVM_BIN:$PATH"
+    export FVM_CACHE_PATH
+}
+
+# ================================================================
+# 备份
+# ================================================================
+backup_fvm() {
+    local out="$BACKUP_DIR/fvm/fvm_backup_$(date +%Y%m%d%H%M%S).tar.gz"
+    local tmp pack_stage
+    local found=0
+
+    mkdir -p "$BACKUP_DIR/fvm"
+    tmp="$(mktemp -d)"
+    pack_stage="$(mktemp -d)"
+    trap 'rm -rf -- "$tmp" "$pack_stage"' EXIT
+
+    check_disk
+
+    local cache_dir
+    cache_dir="$(fvm_cache_dir)"
+    [ -n "$cache_dir" ] || cache_dir="$FVM_CACHE_PATH"
+
+    # ---- FVM 缓存根目录（versions、projects.json、default 等） ----
+    if [ -d "$cache_dir" ]; then
+        substep "打包 $cache_dir（FVM 缓存，排除引擎产物）"
+        mkdir -p "$tmp/fvm_cache"
+        local tarfile crc=0 xrc=0
+        tarfile="$(mktemp "$pack_stage/fvm_cache.XXXXXX.tar")"
+        ( cd "$cache_dir" && tar \
+            "${TAR_WARN_OPTS[@]+"${TAR_WARN_OPTS[@]}"}" \
+            "${TAR_EXTRA_OPTS[@]+"${TAR_EXTRA_OPTS[@]}"}" \
+            "${EXCLUDES[@]}" \
+            "${FVM_CACHE_EXCLUDES[@]}" \
+            -cf "$tarfile" . ) || crc=$?
+        if [ "$crc" -gt 1 ]; then
+            rm -f -- "$tarfile"
+            log_error "打包 $cache_dir 失败 (rc=$crc)"
+            return 1
+        fi
+        [ "$crc" -eq 1 ] && log_warn "打包 $cache_dir 时有文件变化（已容忍）"
+        ( cd "$tmp/fvm_cache" && tar -xpf "$tarfile" ) || xrc=$?
+        rm -f -- "$tarfile"
+        if [ "$xrc" -ne 0 ]; then
+            log_error "解压 $cache_dir 失败"
+            return 1
+        fi
+        found=1
+    else
+        substep "跳过 $cache_dir（不存在）"
+    fi
+
+    # ---- FVM 可执行文件安装目录（如果独立于缓存） ----
+    if [ -d "$FVM_INSTALL_DIR" ] && [ "$FVM_INSTALL_DIR" != "$cache_dir" ]; then
+        substep "打包 FVM 安装目录 $FVM_INSTALL_DIR"
+        mkdir -p "$tmp/fvm_install"
+        local tarfile crc=0 xrc=0
+        tarfile="$(mktemp "$pack_stage/fvm_install.XXXXXX.tar")"
+        ( cd "$FVM_INSTALL_DIR" && tar \
+            "${TAR_WARN_OPTS[@]+"${TAR_WARN_OPTS[@]}"}" \
+            "${TAR_EXTRA_OPTS[@]+"${TAR_EXTRA_OPTS[@]}"}" \
+            "${EXCLUDES[@]}" -cf "$tarfile" . ) || crc=$?
+        if [ "$crc" -gt 1 ]; then
+            rm -f -- "$tarfile"
+            log_error "打包 $FVM_INSTALL_DIR 失败 (rc=$crc)"
+            return 1
+        fi
+        ( cd "$tmp/fvm_install" && tar -xpf "$tarfile" ) || xrc=$?
+        rm -f -- "$tarfile"
+        if [ "$xrc" -ne 0 ]; then
+            log_error "解压 $FVM_INSTALL_DIR 失败"
+            return 1
+        fi
+        found=1
+    fi
+
+    if [ "$found" -eq 0 ]; then
+        log_error "未找到 FVM 相关目录（缓存: $cache_dir / 安装: $FVM_INSTALL_DIR）"
+        return 1
+    fi
+
+    # ---- 环境变量片段 ----
+    grep -E "(FVM_CACHE_PATH|FVM_HOME|fvm/bin|fvm/default)" \
+        "$HOME"/.{bashrc,zshrc,profile} 2>/dev/null \
+        > "$tmp/env_config" || true
+
+    {
+        echo "ARCH=$(uname -m)"
+        echo "OS=$(uname -s)"
+        echo "FVM_CACHE_PATH=$cache_dir"
+        echo "FVM_INSTALL_DIR=$FVM_INSTALL_DIR"
+    } > "$tmp/platform_info"
+
+    tar -czf "$out" -C "$tmp" .
+    rm -rf -- "$tmp" "$pack_stage"
+    trap - EXIT
+
+    log_ok "已创建: $out"
+}
+
+# ================================================================
+# 恢复
+# ================================================================
+check_backup_file() {
+    local file="$1"
+    [ -f "$file" ] || { log_error "备份文件不存在: $file"; return 1; }
+    tar -tzf "$file" >/dev/null 2>&1 || { log_error "非有效 tar.gz: $file"; return 1; }
+}
+
+restore_fvm() {
+    local backup_file="$1"
+    check_backup_file "$backup_file" || return 1
+
+    local temp_dir
+    temp_dir="$(mktemp -d)"
+    trap 'rm -rf -- "$temp_dir"; trap - RETURN' RETURN
+
+    substep "解压备份"
+    tar -xzf "$backup_file" -C "$temp_dir"
+
+    if [ -f "$temp_dir/platform_info" ]; then
+        substep "备份平台信息:"
+        sed 's/^/         /' "$temp_dir/platform_info"
+        substep "当前平台: ARCH=$(uname -m) OS=$(uname -s)"
+    fi
+
+    local restored=0
+
+    if [ -d "$temp_dir/fvm_cache" ] && [ "$(ls -A "$temp_dir/fvm_cache" 2>/dev/null)" ]; then
+        substep "恢复 FVM 缓存到 $FVM_CACHE_PATH"
+        mkdir -p "$FVM_CACHE_PATH"
+        cp -a "$temp_dir/fvm_cache"/. "$FVM_CACHE_PATH"/
+        restored=1
+    fi
+
+    if [ -d "$temp_dir/fvm_install" ] && [ "$(ls -A "$temp_dir/fvm_install" 2>/dev/null)" ]; then
+        substep "恢复 FVM 安装目录到 $FVM_INSTALL_DIR"
+        mkdir -p "$FVM_INSTALL_DIR"
+        cp -a "$temp_dir/fvm_install"/. "$FVM_INSTALL_DIR"/
+        restored=1
+    fi
+
+    if [ "$restored" -eq 0 ]; then
+        log_error "备份中未找到可恢复的 FVM 数据"
+        return 1
+    fi
+
+    local cfg_files=("$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile")
+    local f
+    for f in "${cfg_files[@]}"; do
+        [ -f "$f" ] || continue
+        add_line_if_missing "$f" "export PATH=\"$FVM_BIN:\$PATH\""
+        if [ "$FVM_CACHE_PATH" != "$HOME/fvm" ]; then
+            add_line_if_missing "$f" "export FVM_CACHE_PATH=\"$FVM_CACHE_PATH\""
+        fi
+    done
+
+    export PATH="$FVM_BIN:$PATH"
+    export FVM_CACHE_PATH
+
+    log_ok "FVM 恢复完成"
+}
+
+# ================================================================
+# 备份查找
+# ================================================================
+_find_backup_files() {
+    local -a dirs=("$BACKUP_DIR/fvm" "$BACKUP_DIR")
+    local d
+    shopt -s nullglob
+    for d in "${dirs[@]}"; do
+        [ -d "$d" ] || continue
+        local files=("$d/fvm_backup_"*.tar.gz)
+        if [ ${#files[@]} -gt 0 ]; then
+            printf '%s\n' "${files[@]}" | LC_ALL=C sort
+            shopt -u nullglob
+            return 0
+        fi
+    done
+    shopt -u nullglob
+    return 0
+}
+
+find_latest_backup() {
+    local files
+    files="$(_find_backup_files)"
+    [ -z "$files" ] && return 0
+    printf '%s\n' "$files" | tail -n1
+}
+
+count_backups() {
+    local files
+    files="$(_find_backup_files)"
+    if [ -z "$files" ]; then
+        echo 0
+    else
+        printf '%s\n' "$files" | wc -l | tr -d ' '
+    fi
+}
+
+# ================================================================
+# install 前尝试从本地备份恢复
+# ================================================================
+try_restore_fvm() {
+    local backup
+    backup="$(find_latest_backup)"
+    if [ -z "$backup" ]; then
+        return 1
+    fi
+    substep "发现本地备份: $(basename "$backup")"
+    if restore_fvm "$backup"; then
+        return 0
+    fi
+    log_warn "从备份恢复失败，将回退到在线安装"
+    return 1
+}
+
+# ================================================================
+# 环境刷新
+# ================================================================
+reload_shell_env() {
+    substep "刷新 shell 环境"
+    set +u; set +e
+    source "$HOME/.bashrc" >/dev/null 2>&1
+    set -e; set -u
+
+    export PATH="$FVM_BIN:$PATH"
+    export FVM_CACHE_PATH
+    return 0
+}
+
+verify_fvm() {
+    if is_fvm_installed; then
+        log_ok "FVM 验证通过: $(fvm_version 2>/dev/null || echo 'version unknown')"
+        return 0
+    fi
+    log_error "FVM 验证失败"
+    return 1
+}
+
+print_final_hint() {
+    echo
+    echo "${DIM}提示: 脚本内的环境刷新仅作用于当前进程，请在你的终端执行:${NC}"
+    echo "    source ~/.bashrc  ${DIM}# 或 exec bash / 重开终端${NC}"
+}
+
+# ================================================================
+# 清理（--force 用）
+# ================================================================
+clean_fvm() {
+    local cache_dir
+    cache_dir="$(fvm_cache_dir)"
+    [ -n "$cache_dir" ] || cache_dir="$FVM_CACHE_PATH"
+    rm -rf "$cache_dir" 2>/dev/null || true
+    # 保留 fvm 可执行文件本身，便于重新拉取版本
+}
+
+# ================================================================
+# 子命令: install
+# ================================================================
+cmd_install() {
+    local force=0 no_restore=0
+    local arg
+
+    for arg in "$@"; do
+        case "$arg" in
+            --force|-f)   force=1 ;;
+            --no-restore) no_restore=1 ;;
+            -h|--help)    show_help; exit 0 ;;
+            *)
+                log_error "未知参数: $arg"; return 1 ;;
+        esac
+    done
+
+    printf '\n%s=== fvmmgr install ===%s\n' "$BOLD" "$NC"
+    [ "$force" = "1" ] && log_warn "启用 --force，将重新安装 FVM"
+
+    check_dependencies
+
+    if is_fvm_installed && [ "$force" -ne 1 ]; then
+        log_warn "FVM 已安装，跳过"
+        log_warn "如需强制重装，请加 --force"
+        return 0
+    fi
+
+    if [ "$force" -eq 1 ] && is_fvm_installed; then
+        substep "清理已有的 FVM 缓存"
+        clean_fvm
+    fi
+
+    local restored=0
+    if [ "$no_restore" -ne 1 ]; then
+        if try_restore_fvm; then
+            restored=1
+        fi
+    else
+        substep "已禁用本地恢复 (--no-restore)"
+    fi
+
+    if [ "$restored" -eq 0 ]; then
+        substep "在线安装 FVM"
+        install_fvm_online || return 1
+    fi
+
+    reload_shell_env
+    verify_fvm || return 1
+
+    printf '\n'
+    log_ok "=== FVM 安装完成 ==="
+    print_final_hint
+}
+
+# ================================================================
+# 子命令: backup
+# ================================================================
+cmd_backup() {
+    printf '\n%s=== fvmmgr backup ===%s\n' "$BOLD" "$NC"
+    log_info "备份目录: $BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR"
+
+    backup_fvm
+}
+
+# ================================================================
+# 子命令: restore
+# ================================================================
+cmd_restore() {
+    local force=0
+    local arg
+
+    for arg in "$@"; do
+        case "$arg" in
+            --force|-f) force=1 ;;
+            -h|--help)  show_help; exit 0 ;;
+            *)
+                log_error "未知参数: $arg"; return 1 ;;
+        esac
+    done
+
+    printf '\n%s=== fvmmgr restore ===%s\n' "$BOLD" "$NC"
+
+    if is_fvm_installed && [ "$force" -ne 1 ]; then
+        log_warn "FVM 已安装，跳过（如需覆盖恢复请加 --force）"
+        return 0
+    fi
+
+    local backup
+    backup="$(find_latest_backup)"
+    if [ -z "$backup" ]; then
+        log_error "未找到 FVM 备份"
+        return 1
+    fi
+    substep "使用备份: $(basename "$backup")"
+
+    restore_fvm "$backup" || return 1
+    reload_shell_env
+    verify_fvm || return 1
+
+    print_final_hint
+    return 0
+}
+
+# ================================================================
+# 子命令: status
+# ================================================================
+cmd_status() {
+    printf '\n%s=== fvmmgr status ===%s\n\n' "$BOLD" "$NC"
+    printf '%-10s %-14s %-40s %s\n' "ITEM" "STATUS" "LOCATION" "VERSION"
+    printf '%s\n' "--------------------------------------------------------------------------"
+
+    local status fvm_v cache_dir bcnt
+
+    if is_fvm_installed; then
+        status="${GREEN}installed${NC}"
+        fvm_v="$(fvm_version 2>/dev/null || echo '-')"
+    else
+        status="${YELLOW}missing${NC}"
+        fvm_v="-"
+    fi
+
+    cache_dir="$(fvm_cache_dir)"
+    [ -n "$cache_dir" ] || cache_dir="$FVM_CACHE_PATH"
+
+    bcnt="$(count_backups)"
+
+    printf '%-10s %-22b %-40s %s\n' "fvm" "$status" "$FVM_BIN" "$fvm_v"
+    printf '%-10s %-22s %-40s %s\n' "cache" "" "$cache_dir" "-"
+    printf '         %sbackups: %s%s\n' "$DIM" "$bcnt" "$NC"
+
+    if [ -d "$cache_dir/versions" ]; then
+        local vcount
+        vcount="$(find "$cache_dir/versions" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+        printf '         %sFlutter 版本数: %s%s\n' "$DIM" "$vcount" "$NC"
+    fi
+
+    printf '\n备份目录: %s\n' "$BACKUP_DIR"
+    return 0
+}
+
+# ================================================================
+# 子命令: list
+# ================================================================
+cmd_list() {
+    printf '\n%s=== fvmmgr list ===%s\n' "$BOLD" "$NC"
+
+    local files
+    files="$(_find_backup_files)"
+    if [ -z "$files" ]; then
+        printf '\n  %s(无备份)%s\n' "$DIM" "$NC"
+        return 0
+    fi
+
+    printf '\n%s[FVM]%s\n' "$BOLD" "$NC"
+    local f sz
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        sz="$(du -h "$f" 2>/dev/null | cut -f1)"
+        printf '  %s  %s(%s)%s\n' "$(basename "$f")" "$DIM" "$sz" "$NC"
+    done <<<"$files"
+}
+
+# ================================================================
+# 子命令: self-install
+# ================================================================
+cmd_self_install() {
+    local target_dir="${FVMMGR_BIN_DIR:-$HOME/.local/bin}"
+    local target="$target_dir/$PROG_NAME"
+    local self="$SELF_PATH"
+
+    printf '\n%s=== fvmmgr self-install ===%s\n' "$BOLD" "$NC"
+    log_info "源文件: $self"
+    log_info "目标:   $target"
+
+    [ -f "$self" ] || { log_error "找不到脚本源文件"; return 1; }
+
+    if [ -e "$target" ] && cmp -s "$self" "$target"; then
+        log_ok "已安装且内容一致，无需更新"
+    else
+        [ -e "$target" ] && log_warn "检测到旧版本，覆盖安装"
+        mkdir -p "$target_dir" || { log_error "创建目录失败: $target_dir"; return 1; }
+        cp -f "$self" "$target" || { log_error "复制失败: $target"; return 1; }
+        chmod +x "$target" || { log_error "设置执行权限失败"; return 1; }
+        log_ok "已安装: $target"
+    fi
+
+    case ":$PATH:" in
+        *":$target_dir:"*) log_ok "$target_dir 已在 PATH 中" ;;
+        *) log_warn "$target_dir 不在 PATH 中，请添加:"; echo "  export PATH=\"$target_dir:\$PATH\"" ;;
+    esac
+
+    substep "验证: $PROG_NAME --version"
+    "$target" --version 2>/dev/null || true
+    log_ok "完成。现在可以直接使用: $PROG_NAME status"
+}
+
+# ================================================================
+# 帮助
+# ================================================================
+show_help() {
+    cat <<EOF
+${BOLD}fvmmgr${NC} v${VERSION} - FVM (Flutter Version Manager) 管理器
+
+用法: ${BOLD}$PROG_NAME${NC} <command> [options]
+
+命令:
+  ${BOLD}install${NC}   安装 FVM（前置检查已安装；优先本地备份恢复，否则在线安装）
+  ${BOLD}restore${NC}   从备份恢复 FVM（已安装时跳过，除非 --force）
+  ${BOLD}backup${NC}    备份 FVM 缓存与安装目录
+  ${BOLD}status${NC}    查看 FVM 安装状态、缓存路径、备份数量
+  ${BOLD}list${NC}      列出可用的备份文件
+  ${BOLD}self-install${NC} 安装到 ~/.local/bin（别名: deploy）
+  ${BOLD}help${NC}      显示此帮助
+
+install 选项:
+  --force, -f         强制重装（清理已缓存的 Flutter SDK 版本）
+  --no-restore        跳过本地备份恢复，直接在线安装
+
+示例:
+  $PROG_NAME status
+  $PROG_NAME install
+  $PROG_NAME install --force
+  $PROG_NAME backup
+  $PROG_NAME restore --force
+  $PROG_NAME list
+
+备份内容:
+  FVM 缓存目录（versions/、projects.json、default 等）
+  FVM 安装目录（如果独立于缓存目录）
+  ${DIM}versions/*/bin/cache/artifacts 与 engine 为可重新下载的产物，不备份${NC}
+
+环境变量:
+  FVMMGR_BACKUP_DIR    备份目录 (默认: ~/.local/share/fvmmgr/backups)
+  FVM_CACHE_PATH       FVM 缓存路径 (默认: \$HOME/fvm；FVM_HOME 作为遗留回退)
+  FVM_INSTALL_DIR      FVM 可执行文件安装目录 (默认: \$HOME/fvm)
+  FVMMGR_INSTALL_URL   FVM 安装脚本地址 (默认: $FVM_INSTALL_URL)
+EOF
+}
+
+# ================================================================
+# 主入口
+# ================================================================
+main() {
+    local cmd="${1:-}"
+    [ "$#" -gt 0 ] && shift
+
+    case "$cmd" in
+        install|i)           cmd_install  "$@" ;;
+        backup|b)            cmd_backup   "$@" ;;
+        restore|r|recover)   cmd_restore  "$@" ;;
+        status|st|s)         cmd_status   "$@" ;;
+        list|ls|l)           cmd_list     "$@" ;;
+        self-install|deploy) cmd_self_install "$@" ;;
+        help|-h|--help)      show_help ;;
+        version|-v|--version) printf '%s %s\n' "$PROG_NAME" "$VERSION" ;;
+        "")
+            show_help
+            return 1
+            ;;
+        *)
+            log_error "未知命令: $cmd"
+            show_help
+            return 1
+            ;;
+    esac
+}
+
+main "$@"
