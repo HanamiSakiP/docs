@@ -54,6 +54,8 @@ cargo install --locked navi
 cargo install --locked zellij
 cargo install --locked zoxide
 cargo install bluetui
+cargo install ouch
+cargo install bookokrat
 cargo install abtop
 cargo install fd-find
 cargo install jj-cli

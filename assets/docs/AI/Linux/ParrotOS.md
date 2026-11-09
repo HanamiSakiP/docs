@@ -279,7 +279,14 @@ sudo flatpak remote-modify flathub --url=国内镜像
 
 办公office
 ```bash
-sudo flatpak install flathub org.onlyoffice.desktopeditors
+flatpak install flathub org.onlyoffice.desktopeditors
+flatpak install flathub org.fcitx.Fcitx5
+flatpak install flathub com.usebottles.bottles
+flatpak install flathub com.obsproject.Studio
+flatpak install flathub com.discordapp.Discord
+flatpak remote-add --if-not-exists xifan https://xifan2333.github.io/flatpak-auto/xifan.flatpakrepo
+# Full version (with local sherpa-onnx runtime)
+flatpak install https://xifan2333.github.io/flatpak-auto/refs/org.fcitx.Fcitx5.Addon.Vinput.flatpakref
 ```
 修复vlc打不开
 ```bash
