@@ -12,22 +12,15 @@
 
 * start
 ```bash
-mkdir -p ~/.local/share/devmgr/backups
-git -C ~/.local/share/devmgr clone https://github.com/HanamiSakiP/AI.git
+bash <(curl -fsSL https://raw.githubusercontent.com/HanamiSakiP/udev/main/udev.sh) install
 ```
 ```bash
 mkdir -p ~/.local/bin
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 cp -r ~/.local/share/devmgr/AI/dev/backups ~/.local/share/devmgr/
-install -m755 ~/.local/share/devmgr/AI/dev/dev ~/.local/bin
-install -m755 ~/.local/share/devmgr/AI/dev/dev-tool ~/.local/bin
 install -m755 ~/.local/share/devmgr/AI/dev/tool ~/.local/bin
-install -m755 ~/.local/share/devmgr/AI/dev/undev ~/.local/bin
 install -m755 ~/.local/share/devmgr/AI/dev/doc ~/.local/bin
-dev restore # install
-dev-tool
-source ~/.bashrc
 ```
 
 <details>
