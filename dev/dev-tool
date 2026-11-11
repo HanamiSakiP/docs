@@ -68,6 +68,11 @@ pyenv_version_installed() {
     pyenv versions --bare 2>/dev/null | grep -qx "$1"
 }
 
+# cargo 包是否已安装（通过 cargo install --list 判断）
+cargo_pkg_installed() {
+    cargo install --list 2>/dev/null | grep -q "^$1 "
+}
+
 # ---------- 带检查的安装封装 ----------
 run_npm_install() {
     local pkg=$1
@@ -113,6 +118,23 @@ run_pyenv_install() {
     local t0; t0=$(date +%s)
     # -s: 跳过已存在版本（理论上不会走到，作为双保险避免交互提示）
     if pyenv install -s "$version"; then
+        progress_ok "$(( $(date +%s) - t0 ))"
+    else
+        local rc=$?
+        progress_fail "$rc"
+        return "$rc"
+    fi
+}
+
+run_cargo_install() {
+    local pkg="${!#}"   # 最后一个参数为包名
+    progress_begin "cargo install $*"
+    if cargo_pkg_installed "$pkg"; then
+        progress_skip
+        return 0
+    fi
+    local t0; t0=$(date +%s)
+    if cargo install "$@"; then
         progress_ok "$(( $(date +%s) - t0 ))"
     else
         local rc=$?
@@ -171,6 +193,7 @@ check_tools() {
 NODE_STEPS=15   # nvm1 + npm批量拆4 + 单独npm7 + dsh plugin1 + 缓存2
 GO_STEPS=12     # g1 + go install9 + clean2（已去掉 gguf-parser）
 PIP_STEPS=6     # pyenv2 + pip1 + pip安装2 + 缓存1
+CARGO_STEPS=18  # cargo install 18 条
 
 # ---------- Node.js ----------
 do_node() {
@@ -250,6 +273,37 @@ do_pip() {
     run_try pip cache purge
 }
 
+# ---------- Cargo ----------
+do_cargo() {
+    echo
+    echo "${C_HEAD}=== Cargo ===${C_END}"
+    if ! command -v cargo &>/dev/null; then
+        echo "错误: 未找到 cargo。请先安装 Rust 工具链。" >&2
+        exit 1
+    fi
+
+    run_cargo_install --locked starship
+    run_cargo_install --locked navi
+    run_cargo_install --locked zellij
+    run_cargo_install --locked zoxide
+    run_cargo_install caligula
+    run_cargo_install bluetui
+    run_cargo_install ouch
+    run_cargo_install bookokrat
+    run_cargo_install abtop
+    run_cargo_install fd-find
+    run_cargo_install jj-cli
+    run_cargo_install lsd
+    run_cargo_install binsider
+    run_cargo_install microsandbox
+    run_cargo_install lychee
+    run_cargo_install code2prompt
+    run_cargo_install --force --git https://github.com/sxyazi/yazi.git yazi-build
+    run_cargo_install --force --git https://github.com/RightNow-AI/openfang openfang-cli
+    # 所有 cargo install 完成后清理缓存
+    run_try rm -rf "$HOME/.cargo/git" "$HOME/.cargo/registry"
+}
+
 usage() {
     local name; name=$(basename "$0")
     cat <<EOF
@@ -261,12 +315,14 @@ usage() {
   npm, node      仅 Node.js / npm 相关
   go             仅 Go 相关
   pip, py        仅 Python / pip 相关
+  cargo, rust    仅 Cargo / Rust 相关
   -h, --help     显示本帮助
 
 说明:
   - npm 包在 npm list -g 中已存在则跳过安装
   - go 二进制在 \$GOBIN（默认 ~/go/bin）中已存在则跳过安装
   - Python 版本在 pyenv versions 中已存在则跳过安装
+  - cargo 包在 cargo install --list 中已存在则跳过安装
   - 缓存清理类命令始终执行
 
 示例:
@@ -274,6 +330,7 @@ usage() {
   $name npm            # 仅 Node
   $name go             # 仅 Go
   $name pip            # 仅 Python
+  $name cargo          # 仅 Cargo
   $name npm go         # Node + Go
 EOF
 }
@@ -285,10 +342,11 @@ main() {
     else
         for arg in "$@"; do
             case $arg in
-                all)            sections+=(node go pip);;
+                all)            sections+=(node go pip cargo);;
                 node|npm)       sections+=(node);;
                 go)             sections+=(go);;
                 pip|py|python)  sections+=(pip);;
+                cargo|rust)     sections+=(cargo);;
                 -h|--help)      usage; exit 0;;
                 *)              echo "未知参数: $arg" >&2; usage >&2; exit 1;;
             esac
@@ -299,9 +357,10 @@ main() {
     TOTAL=0
     for s in "${sections[@]}"; do
         case $s in
-            node) TOTAL=$((TOTAL + NODE_STEPS));;
-            go)   TOTAL=$((TOTAL + GO_STEPS));;
-            pip)  TOTAL=$((TOTAL + PIP_STEPS));;
+            node)  TOTAL=$((TOTAL + NODE_STEPS));;
+            go)    TOTAL=$((TOTAL + GO_STEPS));;
+            pip)   TOTAL=$((TOTAL + PIP_STEPS));;
+            cargo) TOTAL=$((TOTAL + CARGO_STEPS));;
         esac
     done
 

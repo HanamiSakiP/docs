@@ -49,24 +49,13 @@ cd obscura
 cargo build --release -p obscura-cli --bins --features render
 # 查看 rust 工具
 cargo install --list
-cargo install --locked starship
-cargo install --locked navi
-cargo install --locked zellij
-cargo install --locked zoxide
-cargo install bluetui
-cargo install ouch
-cargo install bookokrat
-cargo install abtop
-cargo install fd-find
-cargo install jj-cli
-cargo install lsd
-cargo install binsider
-cargo install microsandbox
-cargo install lychee
-cargo install code2prompt
-cargo install --force --git https://github.com/sxyazi/yazi.git yazi-build
-cargo install --force --git https://github.com/RightNow-AI/openfang openfang-cli
 cargo install --git https://github.com/ekzhang/sshx --bin sshx
+# uosc
+# 解压到 ~/.config/mpv/
+# 4k
+# 解压到 ~/.config/mpv/shaders
+# damaku
+# 解压到 ~/.config/mpv/scripts  ->  修改 ~/.config/mpv/script-opts/uosc.conf
 ```
 ```bash
 eval "$(starship init bash)"
