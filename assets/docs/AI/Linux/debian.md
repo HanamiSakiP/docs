@@ -54,40 +54,6 @@ openfang
 <details>
 <summary>ani</summary>
 
-```bash
-# 1. 首次配置
-# 下载前端
-bgmi install
-# 查看所有更新中番剧
-bgmi cal --cover # 下载封面
-# 不使用Nginx
-bgmi config set http serve_static_files --value true
-# 配置蜜柑
-bgmi config set mikan_username --value '你的蜜柑账号'
-bgmi config set mikan_password --value '你的蜜柑密码'
-```
-```bash
-# 2. 下载订阅
-# 下载封面
-bgmi cal --cover
-# 添加订阅
-bgmi add "乱世千金倪亚·利斯顿 转生为娇弱千金的弑神武人华丽无双录"
-# 下载订阅
-bgmi update
-# 查看订阅
-bgmi list
-```
-```bash
-# 3. 启动网页
-bgmi_http --port=8888 --address=0.0.0.0
-```
-```bash
-# 其他
-# 切换源为蜜柑
-bgmi source mikan_project # bangumi_moe
-# 查看当前配置项
-bgmi config print
-```
 mpv弹幕配置
 ```bash
 # uosc安装

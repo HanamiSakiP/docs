@@ -13,6 +13,11 @@
 * start
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/HanamiSakiP/udev/main/udev.sh) install
+exec bash
+g install latest
+go install github.com/hanamisakip/udev@latest
+udev udev completion install
+udev tools all
 ```
 ```bash
 mkdir -p ~/.local/bin
@@ -24,13 +29,44 @@ install -m755 ~/.local/share/devmgr/AI/dev/doc ~/.local/bin
 ```
 
 <details>
-<summary>test</summary>
+<summary>lib</summary>
 
-apt
 ```bash
 apt update
 apt install curl git -y # nano
+# microsandbox
+apt install -y musl-tools flex bison libelf-dev \
+  python3-pyelftools libcap-ng-dev pre-commit
+apt install -y unzip libfontconfig1-dev clang libclang-dev cmake
+# pyenv
+apt install -y build-essential \
+libssl-dev \
+zlib1g-dev \
+libbz2-dev \
+libreadline-dev \
+libsqlite3-dev \
+libffi-dev \
+liblzma-dev \
+pkg-config
 ```
+```bash
+eval "$(starship init bash)"
+eval "$(zoxide init bash)"
+function y() {
+local tmp cwd; tmp="$(mktemp -t "yazi-cwd.XXXXXX")"
+command yazi "$@" --cwd-file="$tmp"
+IFS= read -r -d '' cwd < "$tmp"
+[ "$cwd" != "$PWD" ] && [ -d "$cwd" ] && builtin cd -- "$cwd" || builtin true
+command rm -f -- "$tmp"
+}
+```
+
+
+</details>
+
+<details>
+<summary>test</summary>
+
 ```bash
 # 数据库MCP
 npx @dbx-app/mcp-server
@@ -49,17 +85,6 @@ cargo install --git https://github.com/ekzhang/sshx --bin sshx
 # 解压到 ~/.config/mpv/shaders
 # damaku
 # 解压到 ~/.config/mpv/scripts  ->  修改 ~/.config/mpv/script-opts/uosc.conf
-```
-```bash
-eval "$(starship init bash)"
-eval "$(zoxide init bash)"
-function y() {
-local tmp cwd; tmp="$(mktemp -t "yazi-cwd.XXXXXX")"
-command yazi "$@" --cwd-file="$tmp"
-IFS= read -r -d '' cwd < "$tmp"
-[ "$cwd" != "$PWD" ] && [ -d "$cwd" ] && builtin cd -- "$cwd" || builtin true
-command rm -f -- "$tmp"
-}
 ```
 ```bash
 cat >> ~/.cargo/config.toml << 'EOF'
