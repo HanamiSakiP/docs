@@ -26,6 +26,44 @@ gh repo list
 # 批量克隆10个仓库(最多1000个)
 gh repo list --limit 10 --json nameWithOwner --jq '.[].nameWithOwner' | xargs -L1 gh repo clone
 ```
+```bash
+# windows
+# go env -w GOPROXY=https://goproxy.cn,direct
+# go env -w GO111MODULE=on
+# linux
+export GOPROXY=https://goproxy.cn,direct
+```
+```bash
+go install filippo.io/age/cmd/...@latest
+go install github.com/maaslalani/nap@main
+go install github.com/boyter/scc/v3@latest
+go install github.com/zu1k/nali@latest
+go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+go install github.com/gopasspw/gopass@latest
+go install github.com/LeperGnome/bt/cmd/bt@v1.2.0
+go install github.com/aurc/loggo@latest
+go install github.com/knqyf263/sou@latest
+go install github.com/dhth/omm@latest
+go install github.com/neilotoole/sq@latest
+go install github.com/rs/curlie@latest
+go install github.com/xo/usql@latest
+go install github.com/projectdiscovery/katana/cmd/katana@latest
+# test
+go install github.com/brittonhayes/pillager@latest
+go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
+env CGO_ENABLED=0 go install -ldflags="-s -w" github.com/gokcehan/lf@latest
+```
+```bash
+pip install httpie
+pip install pathos
+pip install toolong
+pipx run nvitop
+# uvx nvitop
+python -m pip install aider-install
+aider-install
+```
 
 </details>
 
@@ -70,6 +108,18 @@ sed -i.bak 's|<stream>stream-quality,|<stream>stream-quality,button:danmaku,cycl
 # $HOME/.config/mpv/script-opts/uosc.conf
 # 将 <stream>stream-quality 替换以下
 <stream>stream-quality,button:danmaku,cycle:toggle_on:show_danmaku@uosc_danmaku:on=toggle_on/off=toggle_off?弹幕开关
+```
+```bash
+# 密钥生成
+age-keygen -o key.txt
+# 密钥解密
+age -d -i key.txt -o 还原后的文件  加密的文件
+# 密钥加密
+age -p -i key.txt -o 加密后的文件  加密前的文件
+# 加密
+age -p -o secret.age secret.txt
+# 解密
+age -d  -o secret.txt secret.age
 ```
 
 </details>

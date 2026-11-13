@@ -17,11 +17,10 @@
   * [12. eino-编排](assets/docs/AI/eino/eino-编排.md)
 * Linux
   * [1. tool](assets/docs/AI/Linux/debian.md)
-  * [2. fcitx5 输入法](assets/docs/AI/Linux/fcitx5.md)
-  * [3. WebDAV](assets/docs/AI/Linux/webdav.md)
-  * [4. go-gin-grom](assets/docs/AI/Linux/go-2.md)
-  * [5. mysql-redis](assets/docs/AI/Linux/MariaDB.md)
-  * [6. ParrotOS](assets/docs/AI/Linux/ParrotOS.md)
+  * [2. WebDAV](assets/docs/AI/Linux/webdav.md)
+  * [3. go-gin-grom](assets/docs/AI/Linux/go-2.md)
+  * [4. mysql-redis](assets/docs/AI/Linux/MariaDB.md)
+  * [5. ParrotOS](assets/docs/AI/Linux/ParrotOS.md)
 * docker
   * [1. debian及docker常用命令](/assets/docs/docker/debian_docker.md)
   * [2. docker储存空间转移](/assets/docs/docker/docker磁盘空间不足解决办法.md)

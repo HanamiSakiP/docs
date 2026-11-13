@@ -46,39 +46,23 @@ sha512sum *.zip >> SHA512SUMS
 <details>
 <summary>1. 安装系统(Linux)</summary>
 
-* 1. 首先需要一个 U 盘,进行烧录系统
-* [balena官网下载](https://github.com/balena-io/etcher/releases)
+* 1. 准备 U 盘,镜像文件,文件哈希值
 ```bash
-# 1. 烧录 U 盘
-# 选择.deb下载
-# 以 balena-etcher_2.1.4_amd64.deb 为例
-# 自行加sudo
-dpkg -i balena-etcher_2.1.4_amd64.deb 
-# 运行图形化
-balena-etcher 
-# 1.1 点击 Flash from file
-# 选择ISO文件(镜像)
-# Parrot-security-7.0_amd64.iso
-# 1.2 Select target 选择U盘进行烧录
-# 1.3 Flash! 选择U盘进行烧录
+# caligula burn -z auto <镜像文件> -s <文件哈希值>
+# 例如
+caligula burn -z auto Parrot-home-7.4_amd64.iso -s 67937cfacadc11042acd47f1ddba5f7b
+# 1. 回车 -> 选择u盘
+# 2. y -> 确认u盘信息
+# 3. y -> 提权写入u盘
 ```
 * 2. 重启 , 进入BIOS选择 USB 启动 (一般按F2,如不是,上官网查询)
 * 3. 启动后按照提示安装即可
 
 </details>
 <details>
-<summary>2. 安装系统(windows)</summary>
+<summary>方法2</summary>
 
-* 1. 首先需要一个 U 盘,进行烧录系统
 * [balena官网下载](https://github.com/balena-io/etcher/releases)
-    * 1.1 点击 Flash from file
-    * 选择ISO文件(镜像)
-    * Parrot-security-7.0_amd64.iso
-    * 1.2 Select target 选择U盘进行烧录
-    * 1.3 Flash! 选择U盘进行烧录
-
-* 2. 重启 , 进入BIOS选择 USB 启动 (一般按F2,如不是,上官网查询)
-* 3. 启动后按照提示安装即可
 
 </details>
 
@@ -103,9 +87,34 @@ cp path/bg.jpg  .
 <summary>系统更新</summary>
 
 ```bash
-parrot-upgrade
-# parrot-updater
+parrot-upgrade # parrot-updater
 ```
+```bash
+docsify serve .
+```
+输入法
+```bash
+apt install -y fcitx5 fcitx5-chinese-addons # libreoffice-l10n-zh-cn
+```
+```bash
+mkdir -p ~/.local/share/fcitx5/themes
+# 主题目录
+cd ~/.local/share/fcitx5/themes
+# 拷贝主题目录
+# fcitx5-themes-candlelight
+cat >> ~/.config/fcitx5/conf/classicui.conf << 'EOF'
+# 垂直候选列表
+Vertical Candidate List=False
+# 按屏幕 DPI 使用
+PerScreenDPI=True
+# Font (设置成你喜欢的字体)
+Font="Smartisan Compact CNS 22"
+# 主题(这里要改成你想要使用的主题名，主题名就在下面)
+Theme=macOS-dark
+EOF
+```
+
+
 
 </details>
 
