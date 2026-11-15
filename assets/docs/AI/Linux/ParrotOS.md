@@ -113,7 +113,23 @@ Font="Smartisan Compact CNS 22"
 Theme=macOS-dark
 EOF
 ```
-
+mpv弹幕配置
+```bash
+# uosc安装
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tomasklaen/uosc/HEAD/installers/unix.sh)"
+# 弹幕安装
+# Tony15246/uosc_danmaku
+gh repo clone Tony15246/uosc_danmaku $HOME/.config/mpv/scripts/uosc_danmaku
+```
+```bash
+sed -i.bak 's|<stream>stream-quality,|<stream>stream-quality,button:danmaku,cycle:toggle_on:show_danmaku@uosc_danmaku:on=toggle_on/off=toggle_off?弹幕开关,|' "$HOME/.config/mpv/script-opts/uosc.conf"
+```
+解析
+```conf
+# $HOME/.config/mpv/script-opts/uosc.conf
+# 将 <stream>stream-quality 替换以下
+<stream>stream-quality,button:danmaku,cycle:toggle_on:show_danmaku@uosc_danmaku:on=toggle_on/off=toggle_off?弹幕开关
+```
 
 
 </details>

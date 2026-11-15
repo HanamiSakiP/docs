@@ -16,7 +16,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/HanamiSakiP/udev/main/udev.s
 exec bash
 g install latest
 go install github.com/hanamisakip/udev@latest
-udev udev completion install
+udev completion install
 udev tools all
 ```
 ```bash
@@ -115,13 +115,11 @@ docsify serve .
 
 ```bash
 # 解压单个.tar.gz文件
-tar -zxvf amd.tar.gz
+# tar -zxvf amd.tar.gz
 # 解压所有.tar.gz文件
-# for tar in *.tar.gz;  do tar xvf $tar; done
+for tar in *.tar.gz;  do tar xvf $tar; done
 # 安装所有 deb 文件
-# sudo dpkg -i *.deb
-# 使用自定义的 bash 脚本
-./restore_g.sh g_backup_*.tar.gz
+sudo dpkg -i *.deb
 ```
 
 ```bash

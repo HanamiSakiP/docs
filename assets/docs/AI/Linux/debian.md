@@ -1,71 +1,5 @@
-## lang版本控制
-* [go](https://github.com/voidint/g)
-* [node](https://github.com/nvm-sh/nvm)
-* [python](https://github.com/pyenv/pyenv)
+## git AND tmux
 
-<details>
-<summary>省流</summary>
-
-恢复(mytoken.txt)
-```bash
-# 设置git
-git config --global user.name "hanamisakip"
-git config --global user.email "你的邮箱@example.com"
-ssh-keygen -t rsa -b 4096 -C "你的邮箱@example.com"
-cat ~/.ssh/id_rsa.pub
-# gh login
-gh auth login --with-token < mytoken.txt
-# echo "你的令牌" | gh auth login --with-token
-# add SSH
-gh ssh-key add ~/.ssh/id_rsa.pub -t "test"
-# 如果缺少权限
-# gh auth refresh -h github.com -s admin:public_key
-# https://github.com/login/device
-# 查看仓库(用户名/仓库名)
-gh repo list
-# 批量克隆10个仓库(最多1000个)
-gh repo list --limit 10 --json nameWithOwner --jq '.[].nameWithOwner' | xargs -L1 gh repo clone
-```
-```bash
-# windows
-# go env -w GOPROXY=https://goproxy.cn,direct
-# go env -w GO111MODULE=on
-# linux
-export GOPROXY=https://goproxy.cn,direct
-```
-```bash
-go install filippo.io/age/cmd/...@latest
-go install github.com/maaslalani/nap@main
-go install github.com/boyter/scc/v3@latest
-go install github.com/zu1k/nali@latest
-go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
-go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-go install github.com/gopasspw/gopass@latest
-go install github.com/LeperGnome/bt/cmd/bt@v1.2.0
-go install github.com/aurc/loggo@latest
-go install github.com/knqyf263/sou@latest
-go install github.com/dhth/omm@latest
-go install github.com/neilotoole/sq@latest
-go install github.com/rs/curlie@latest
-go install github.com/xo/usql@latest
-go install github.com/projectdiscovery/katana/cmd/katana@latest
-# test
-go install github.com/brittonhayes/pillager@latest
-go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
-env CGO_ENABLED=0 go install -ldflags="-s -w" github.com/gokcehan/lf@latest
-```
-```bash
-pip install httpie
-pip install pathos
-pip install toolong
-pipx run nvitop
-# uvx nvitop
-python -m pip install aider-install
-aider-install
-```
-
-</details>
 
 <details>
 <summary>AI-cli</summary>
@@ -88,43 +22,6 @@ openfang
 ```
 
 </details>
-
-<details>
-<summary>ani</summary>
-
-mpv弹幕配置
-```bash
-# uosc安装
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tomasklaen/uosc/HEAD/installers/unix.sh)"
-# 弹幕安装
-# Tony15246/uosc_danmaku
-gh repo clone Tony15246/uosc_danmaku $HOME/.config/mpv/scripts/uosc_danmaku
-```
-```bash
-sed -i.bak 's|<stream>stream-quality,|<stream>stream-quality,button:danmaku,cycle:toggle_on:show_danmaku@uosc_danmaku:on=toggle_on/off=toggle_off?弹幕开关,|' "$HOME/.config/mpv/script-opts/uosc.conf"
-```
-解析
-```conf
-# $HOME/.config/mpv/script-opts/uosc.conf
-# 将 <stream>stream-quality 替换以下
-<stream>stream-quality,button:danmaku,cycle:toggle_on:show_danmaku@uosc_danmaku:on=toggle_on/off=toggle_off?弹幕开关
-```
-```bash
-# 密钥生成
-age-keygen -o key.txt
-# 密钥解密
-age -d -i key.txt -o 还原后的文件  加密的文件
-# 密钥加密
-age -p -i key.txt -o 加密后的文件  加密前的文件
-# 加密
-age -p -o secret.age secret.txt
-# 解密
-age -d  -o secret.txt secret.age
-```
-
-</details>
-
-## git AND tmux
 
 ### tmux
 ```bash
@@ -265,6 +162,71 @@ ollama pull qwen3.5:0.8b
 # 使用模型(无则会进行下载)
 ollama run qwen3.5:0.8b
 ```
+
+
+<details>
+<summary>省流</summary>
+
+恢复(mytoken.txt)
+```bash
+# 设置git
+git config --global user.name "hanamisakip"
+git config --global user.email "你的邮箱@example.com"
+ssh-keygen -t rsa -b 4096 -C "你的邮箱@example.com"
+cat ~/.ssh/id_rsa.pub
+# gh login
+gh auth login --with-token < mytoken.txt
+# echo "你的令牌" | gh auth login --with-token
+# add SSH
+gh ssh-key add ~/.ssh/id_rsa.pub -t "test"
+# 如果缺少权限
+# gh auth refresh -h github.com -s admin:public_key
+# https://github.com/login/device
+# 查看仓库(用户名/仓库名)
+gh repo list
+# 批量克隆10个仓库(最多1000个)
+gh repo list --limit 10 --json nameWithOwner --jq '.[].nameWithOwner' | xargs -L1 gh repo clone
+```
+```bash
+# windows
+# go env -w GOPROXY=https://goproxy.cn,direct
+# go env -w GO111MODULE=on
+# linux
+export GOPROXY=https://goproxy.cn,direct
+```
+```bash
+go install filippo.io/age/cmd/...@latest
+go install github.com/maaslalani/nap@main
+go install github.com/boyter/scc/v3@latest
+go install github.com/zu1k/nali@latest
+go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+go install github.com/gopasspw/gopass@latest
+go install github.com/LeperGnome/bt/cmd/bt@v1.2.0
+go install github.com/aurc/loggo@latest
+go install github.com/knqyf263/sou@latest
+go install github.com/dhth/omm@latest
+go install github.com/neilotoole/sq@latest
+go install github.com/rs/curlie@latest
+go install github.com/xo/usql@latest
+go install github.com/projectdiscovery/katana/cmd/katana@latest
+# test
+go install github.com/brittonhayes/pillager@latest
+go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
+env CGO_ENABLED=0 go install -ldflags="-s -w" github.com/gokcehan/lf@latest
+```
+```bash
+pip install httpie
+pip install pathos
+pip install toolong
+pipx run nvitop
+# uvx nvitop
+python -m pip install aider-install
+aider-install
+```
+
+</details>
 
 * [浏览器夜间插件](https://addons.mozilla.org/firefox/addon/dark-background-light-text/)
 ```text
