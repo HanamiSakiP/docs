@@ -1,29 +1,36 @@
-## git AND tmux
+# tool
 
-
-<details>
-<summary>AI-cli</summary>
-
-skills和mcp
 ```bash
 # skill -> 技能知识
 # mcp -> 工具感官
+# 数据库MCP
+npx @dbx-app/mcp-server
+# 查看当前用户仓库
+gh repo list
 ```
-agents
 ```bash
-# agents -> 智能体，已配置好的LLM
-rea-agents
-# 快速可用7个agents
-openfang
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python main.py
+deactivate
 ```
-常用通用TUI命令
 ```bash
-/login
+source .venv/bin/activate
+python main.py
+# deactivate
 ```
-
-</details>
-
-### tmux
+```bash
+# git配置ssh
+git config --global user.name "hanamisakip"
+git config --global user.email "你的邮箱@example.com"
+ssh-keygen -t rsa -b 4096 -C "你的邮箱@example.com"
+cat ~/.ssh/id_rsa.pub
+# 查看已配置的远程仓库,名称 + 对应 URL
+git remote -v
+# 查看单个远程仓库的详细信息
+git remote show origin  # 替换 origin 为你的远程仓库简称
+```
 ```bash
 # 创建会话和后台输出命令
 tmux new-session -d -s name
@@ -35,86 +42,16 @@ tmux ls
 # 删除会话
 tmux kill-session -t name
 ```
-
-### git
 ```bash
-# 下载项目
-git clone 地址  指定目录(没有设置则默认当前目录)
-# 查看已配置的远程仓库,名称 + 对应 URL
-git remote -v
-# 查看单个远程仓库的详细信息
-git remote show origin  # 替换 origin 为你的远程仓库简称
+cat >> ~/.cargo/config.toml << 'EOF'
+[net]
+git-fetch-with-cli = true
+EOF
+rm -rf ~/.cargo/git ~/.cargo/registry
+# 
+CARGO_TARGET_DIR=~/.cargo-target 
 ```
-git SSH_Config
-```bash
-git config --global user.name "hanamisakip"
-git config --global user.email "你的邮箱@example.com"
-ssh-keygen -t rsa -b 4096 -C "你的邮箱@example.com"
-cat ~/.ssh/id_rsa.pub
-# gh login
-gh auth login --with-token < mytoken.txt
-# echo "你的令牌" | gh auth login --with-token
-# add SSH
-gh ssh-key add ~/.ssh/id_rsa.pub -t "test"
-```
-
-<details>
-<summary>git 后续使用</summary>
-
-
- git 后续使用
-```bash
-# 添加子模块
-git submodule add https://github.com/iphysresearch/GWToolkit.git GWToolkit
-# 初始化更新子模块
-git submodule update --init --recursive
-# 查看当前状态
-git status
-```
-* 此时已生成了.gitmodules 显示如下
-```text
-$ git status
-位于分支 main
-您的分支与上游分支 'origin/main' 一致。
-要提交的变更：
-  （使用 "git restore --staged <文件>..." 以取消暂存）
-	新文件：   .gitmodules
-	新文件：   GWToolkit
-```
-```bash
-# 查看子模块
-git submodule
-# 更新项目内子模块到最新版本
-git submodule update
-# 更新子模块为远程项目的最新版本
-git submodule update --remote
-# 1. 删除子模块文件夹
-git rm --cached GWToolkit
-rm -rf GWToolkit
-
-2. 删除 .gitmodules 文件中相关子模块的信息，类似于：
-```text
-[submodule "GWToolkit"]
-        path = GWToolkit
-        url = https://github.com/iphysresearch/GWToolkit.git
-```
-
-3. 删除 .git/config 中相关子模块信息，类似于：
-```text
-[submodule "GWToolkit"]
-        url = https://github.com/iphysresearch/GWToolkit.git
-        active = true
-```
- 
-4. 删除 .git 文件夹中的相关子模块文件
-```bash
-rm -rf .git/modules/GWToolkit
-```text
-```
-
-</details>
-
-## 3. Ollama安装与命令
+## Ollama
 ```bash
 # 一键安装
 # curl -fsSL https://ollama.com/install.sh | sh
@@ -167,26 +104,6 @@ ollama run qwen3.5:0.8b
 <details>
 <summary>省流</summary>
 
-恢复(mytoken.txt)
-```bash
-# 设置git
-git config --global user.name "hanamisakip"
-git config --global user.email "你的邮箱@example.com"
-ssh-keygen -t rsa -b 4096 -C "你的邮箱@example.com"
-cat ~/.ssh/id_rsa.pub
-# gh login
-gh auth login --with-token < mytoken.txt
-# echo "你的令牌" | gh auth login --with-token
-# add SSH
-gh ssh-key add ~/.ssh/id_rsa.pub -t "test"
-# 如果缺少权限
-# gh auth refresh -h github.com -s admin:public_key
-# https://github.com/login/device
-# 查看仓库(用户名/仓库名)
-gh repo list
-# 批量克隆10个仓库(最多1000个)
-gh repo list --limit 10 --json nameWithOwner --jq '.[].nameWithOwner' | xargs -L1 gh repo clone
-```
 ```bash
 # windows
 # go env -w GOPROXY=https://goproxy.cn,direct

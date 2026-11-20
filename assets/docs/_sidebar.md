@@ -1,7 +1,6 @@
 <!-- _sidebar.md -->
 
 * AI-adk
-  * [gal](/assets/docs/test/gal.md)
   * [1. adk_agent](assets/docs/AI/adk_agent/adk_agnet.md)
   * [2. adk_MAS](assets/docs/AI/adk_agent/adk-MAS.md)
   * [3. adk_MCP](assets/docs/AI/adk_agent/adk-MCP.md)

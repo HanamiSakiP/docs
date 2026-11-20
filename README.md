@@ -34,10 +34,6 @@ install -m755 ~/.local/share/devmgr/AI/dev/doc ~/.local/bin
 ```bash
 apt update
 apt install curl git -y # nano
-# microsandbox
-apt install -y musl-tools flex bison libelf-dev \
-  python3-pyelftools libcap-ng-dev pre-commit
-apt install -y unzip libfontconfig1-dev clang libclang-dev cmake
 # pyenv
 apt install -y build-essential \
 libssl-dev \
@@ -48,6 +44,13 @@ libsqlite3-dev \
 libffi-dev \
 liblzma-dev \
 pkg-config
+# microsandbox
+apt install -y musl-tools flex bison libelf-dev \
+  python3-pyelftools libcap-ng-dev pre-commit \
+  unzip libfontconfig1-dev clang libclang-dev cmake \
+  build-essential libssl-dev zlib1g-dev libbz2-dev \
+  libreadline-dev libsqlite3-dev libffi-dev liblzma-dev \
+  pkg-config
 ```
 ```bash
 eval "$(starship init bash)"
@@ -61,41 +64,19 @@ command rm -f -- "$tmp"
 }
 ```
 
-
 </details>
 
 <details>
 <summary>test</summary>
 
 ```bash
-# 数据库MCP
-npx @dbx-app/mcp-server
 # 1. 浏览器
 npm install puppeteer-core
-git clone https://github.com/h4ckf0r0day/obscura.git
-cd obscura
-# Rendering
-cargo build --release -p obscura-cli --bins --features render
 # 查看 rust 工具
 cargo install --list
 cargo install --git https://github.com/ekzhang/sshx --bin sshx
-# uosc
-# 解压到 ~/.config/mpv/
-# 4k
-# 解压到 ~/.config/mpv/shaders
-# damaku
-# 解压到 ~/.config/mpv/scripts  ->  修改 ~/.config/mpv/script-opts/uosc.conf
 ```
 ```bash
-cat >> ~/.cargo/config.toml << 'EOF'
-[net]
-git-fetch-with-cli = true
-EOF
-rm -rf ~/.cargo/git ~/.cargo/registry
-```
-```bash
-CARGO_TARGET_DIR=~/.cargo-target 
-docsify serve .
 # 每天02点执行rclone同步
 0 2 * * * flock -n /tmp/rclone.lock ~/go/bin/rclone sync /本地/路径 remote:云端路径 --log-file /home/你的用户名/rclone-sync.log --log-level INFO
 ```
@@ -111,7 +92,6 @@ docsify serve .
 (/// ### )
 
 * [Bitwarden](https://bitwarden.com/)
-* [KeePass](https://keepass.info/)
 
 ```bash
 # 解压单个.tar.gz文件
